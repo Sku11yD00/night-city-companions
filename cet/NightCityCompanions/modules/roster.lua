@@ -262,11 +262,19 @@ local function spawnAt(p, pos, yaw)
     p.spawnId = spawnRecord(id, CName.new(p.appearance or ''), pos, EulerAngles.new(0, 0, yaw):ToQuat(),
       { CName.new(TAG) })
   end)
+  U.trace('spawn %s: record %s, appearance %s, asked %s, id %s', p.name, tostring(p.record), tostring(p.appearance),
+    tostring(ok), p.spawnId and 'yes' or 'none')
+  if ok and not p.spawnId then
+    p.spawnTrouble = 'the spawner refused'
+    return false
+  end
   if ok then p.spawnAsked = os.clock() end
   return ok
 end
 
 local function attach(p, entity)
+  U.trace('%s arrived', p.name)
+  p.spawnTries, p.spawnTrouble = 0, nil
   p.entity, p.key, p.lost = entity, U.idKey(entity), false
   p.scale = p.targetScale or 1.0   -- arrive at their saved size, not growing into it
   makeFollower(entity)
@@ -288,8 +296,11 @@ local function pollSpawn(p)
     end
   end
   if os.clock() - (p.spawnAsked or 0) > 10 then   -- never came: take the request back and ask again
+    p.spawnTrouble = e and 'spawned but never attached to the world' or 'the spawner never made them'
+    U.trace('spawn %s: %s', p.name, p.spawnTrouble)
     pcall(spawnDelete, p.spawnId)
     p.spawnId = nil
+    p.spawnTries = (p.spawnTries or 0) + 1
   end
   return false
 end
@@ -386,6 +397,17 @@ local function nearPlayer(distance, side)
   return Vector4.new(p.x - fwd.x * distance + rx * s, p.y - fwd.y * distance + ry * s, p.z, 1.0), player:GetWorldYaw()
 end
 
+-- Stop trying to bring someone who will not come: they stay in contacts, no longer with you.
+function R.giveUp(p)
+  if p.spawnId then pcall(spawnDelete, p.spawnId) end
+  p.active, p.spawnId, p.spawnTries, p.onArrive, p.lost = false, nil, 0, nil, true
+  if not p.saved then
+    for i, q in ipairs(R.people) do if q == p then table.remove(R.people, i) break end end
+  end
+  rebuild()
+  R.save()
+end
+
 -- Call a saved contact to the player's side. onArrive runs once they are there.
 function R.summon(p, onArrive)
   if not p then return false end
@@ -447,7 +469,11 @@ function R.update(dt)
     else
       f.entity = nil
       f.lost = true
-      if C.v.respawnLost and canSpawn() and recordId(f) then
+      if (f.spawnTries or 0) >= 3 then
+        U.say('%s could not be brought back (%s)', f.name, f.spawnTrouble or 'no reason known')
+        R.giveUp(f)
+        break
+      elseif C.v.respawnLost and canSpawn() and recordId(f) then
         local at, yaw = nearPlayer(2.0)
         spawnAt(f, at, yaw)
       end

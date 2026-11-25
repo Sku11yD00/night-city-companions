@@ -58,16 +58,26 @@ function N.call(p)
   pcall(function() Game.GetAudioSystem():Play(CName.new('ui_phone_initiation_call')) end)
 end
 
+-- The ring is a looping sound in the game: it has to be stopped.
+local function stopRing()
+  pcall(function() Game.GetAudioSystem():Stop(CName.new('ui_phone_initiation_call')) end)
+  pcall(function() Game.GetAudioSystem():Play(CName.new('ui_phone_initiation_call_stop')) end)
+end
+
 function N.hangUp()
   if N.state == 'ringing' then banner('Call ended.', 2) end
+  stopRing()
   N.state, N.target = 'idle', nil
 end
 
 function N.update(dt)
+  if N.state ~= 'idle' and not N.target then N.state = 'idle' end
   if N.state == 'ringing' then
     ringT = ringT + dt
     if ringT >= C.v.callSeconds then
       local p = N.target
+      stopRing()
+      U.trace('call %s: summoning', p.name)
       if R.summon(p, arrived) then
         N.state = 'arriving'
         banner(p.name .. ' picked up. On the way.', 3)
@@ -78,7 +88,15 @@ function N.update(dt)
     end
   elseif N.state == 'arriving' then
     ringT = ringT + dt
-    if ringT > C.v.callSeconds + 15 then N.state, N.target = 'idle', nil end   -- never arrived
+    if ringT > C.v.callSeconds + 25 then   -- never arrived
+      local p = N.target
+      N.state, N.target = 'idle', nil
+      if p and not R.alive(p) then
+        U.say('%s never arrived (%s)', p.name, p.spawnTrouble or 'no reason known')
+        R.giveUp(p)
+        banner(p.name .. " didn't make it. Try calling again somewhere else.", 4)
+      end
+    end
   end
 end
 
