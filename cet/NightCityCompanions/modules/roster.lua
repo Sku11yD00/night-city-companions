@@ -127,7 +127,7 @@ R.alive = alive
 local function findByEntity(entity)
   local key = U.idKey(entity)
   for _, p in ipairs(R.people) do
-    if p.entity == entity or (key and p.key == key) then return p end
+    if p.entity == entity or (key and (p.key == key or p.originalKey == key)) then return p end
   end
   return nil
 end
@@ -295,6 +295,7 @@ local function pollSpawn(p)
       return true
     end
   end
+  if e and os.clock() - (p.spawnAsked or 0) <= 30 then return false end   -- made, still being set up: wait
   if os.clock() - (p.spawnAsked or 0) > 10 then   -- never came: take the request back and ask again
     p.spawnTrouble = e and 'spawned but never attached to the world' or 'the spawner never made them'
     U.trace('spawn %s: %s', p.name, p.spawnTrouble)
@@ -309,6 +310,10 @@ function R.recruit(entity)
   entity = entity or R.lookAt()
   if not entity then U.say('look at a person to recruit them') return nil end
   local existing = findByEntity(entity)
+  if existing and existing.active and existing.spawnId then
+    U.say('%s is already on the way', existing.name)
+    return existing
+  end
   if existing and existing.active then
     for i, p in ipairs(R.list) do if p == existing then R.selected = i end end
     U.say('%s already follows you', existing.name)
@@ -328,6 +333,7 @@ function R.recruit(entity)
     pcall(function() yaw = entity:GetWorldYaw() end)
     if not spawnAt(p, pos, yaw) then return nil end
     p.copy = true
+    p.originalKey = U.idKey(entity)
     removeEntity(entity)
     U.say('%s (a street person) is joining you', p.name)
   else
@@ -466,9 +472,27 @@ function R.update(dt)
         R.teleportToPlayer(f)
       end
     else
-      f.entity = nil
       f.lost = true
-      if (f.spawnTries or 0) >= 3 then
+      -- The person the mod spawned may only be out of reach for a moment (streaming, a cutscene). Never make a
+      -- second one while the first still exists: wait for them, and only once they are gone spawn a new one.
+      local own = f.ownSpawn and spawnedEntity(f.ownSpawn)
+      if own then
+        f.lostFor = (f.lostFor or 0) + 0.5
+        local back = false
+        pcall(function() back = own:IsAttached() and not own:IsDead() end)
+        if back then
+          f.entity, f.lostFor = own, 0
+        elseif f.lostFor > 20 then
+          U.trace('%s stayed out of reach: replacing them', f.name)
+          pcall(spawnDelete, f.ownSpawn)
+          f.ownSpawn, f.entity, f.lostFor = nil, nil, 0
+        end
+      else
+        f.entity, f.ownSpawn = nil, nil
+      end
+      if f.entity or f.ownSpawn then
+        -- waiting for the one that exists
+      elseif (f.spawnTries or 0) >= 3 then
         U.say('%s could not be brought back (%s)', f.name, f.spawnTrouble or 'no reason known')
         R.giveUp(f)
         break
