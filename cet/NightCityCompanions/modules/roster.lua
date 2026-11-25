@@ -178,16 +178,25 @@ local function makeFollower(entity)
     pcall(function() entity.isPlayerCompanionCachedTimeStamp = 0 end)
     pcall(function() entity.movePolicies:Toggle(true) end)
   end)
+  -- Civilians (street people especially) carry a reaction preset that makes them panic and flee from combat. The
+  -- game's own companions use the follower preset: they stay with you and join the fight.
+  local preset
+  pcall(function() preset = entity.reactionComponent:GetReactionPreset():GetID() end)
+  U.try('follower reactions', function()
+    entity.reactionComponent:SetReactionPreset(
+      TweakDBInterface.GetReactionPresetRecord(TweakDBID.new('ReactionPresets.Follower')))
+  end)
+  pcall(function() entity.reactionComponent:ResetAllStimReactions() end)
   if ok and C.v.invulnerable then
     U.try('invulnerable', function()
       Game.GetGodModeSystem():AddGodMode(entity:GetEntityID(), gameGodModeType.Invulnerable, CName.new(TAG))
     end)
   end
-  return ok, group
+  return ok, group, preset
 end
 
 -- Let a person go where they stand: no role, back in the attitude group they had before recruiting.
-local function releaseEntity(entity, group, keepRole)
+local function releaseEntity(entity, group, keepRole, preset)
   -- one step at a time, each written to trace.log first, so a crash shows which step it was
   U.trace('dismiss: removing god mode')
   pcall(function()
@@ -198,6 +207,12 @@ local function releaseEntity(entity, group, keepRole)
   if group and group ~= '' and group ~= 'player' then
     U.trace('dismiss: attitude group back to %s', group)
     pcall(function() entity:GetAttitudeAgent():SetAttitudeGroup(CName.new(group)) end)
+  end
+  if preset and not keepRole then
+    U.trace('dismiss: their own reactions back')
+    pcall(function()
+      entity.reactionComponent:SetReactionPreset(TweakDBInterface.GetReactionPresetRecord(preset))
+    end)
   end
   if keepRole then
     U.trace('dismiss: leaving the role (they are about to be removed)')
@@ -345,10 +360,11 @@ function R.recruit(entity)
     removeEntity(entity)
     U.say('%s (a street person) is joining you', p.name)
   else
-    local ok, group = makeFollower(entity)
+    local ok, group, preset = makeFollower(entity)
     if not ok then return nil end
     p.entity, p.key = entity, U.idKey(entity)
     if group and group ~= 'player' then p.homeGroup = group end
+    p.homePreset = preset
     U.say('%s is following you', p.name)
   end
   if not existing then table.insert(R.people, p) end
@@ -369,7 +385,7 @@ function R.dismiss(p)
   if alive(p) then
     -- Someone the mod spawned is removed a few seconds later, so their follower role is left to go with them:
     -- clearing it is the step that crashed. God mode is always taken off, since the game keeps that by id.
-    releaseEntity(p.entity, p.homeGroup, p.ownSpawn ~= nil)
+    releaseEntity(p.entity, p.homeGroup, p.ownSpawn ~= nil, p.homePreset)
     -- anyone the mod spawned is taken out again, contact or not: a spawned person left behind is nobody's to clean up
     if p.ownSpawn then removeLater(p.entity, p.ownSpawn) end
   end
