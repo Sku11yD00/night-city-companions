@@ -67,16 +67,28 @@ registerHotkey('vrc_neuro_hangup', 'Neurointerface: hang up', function() Neuro.h
 
 ----------------------------------------------------------------------------------------------- events
 
+-- The mod does nothing while a save loads: spawning people or changing AI before the world is up crashes the game.
+-- After the player is attached it waits for the HUD to appear (the quest tracker starting) and a few seconds more,
+-- or at most 30 seconds.
+local session = { ready = false, hud = false, wait = 0 }
+
 registerForEvent('onInit', function()
+  session.ready = Game.GetPlayer() ~= nil   -- the mod was reloaded in the middle of play
   -- after a load or a new game every entity handle is stale
   pcall(function()
     Observe('PlayerPuppet', 'OnGameAttached', function()
+      session.ready, session.hud, session.wait = false, false, 0
+      U.trace('a game is loading: waiting')
       Ride.state, Ride.follower = 'none', nil
       R.forgetHandles()
     end)
   end)
   pcall(function()
+    Observe('QuestTrackerGameController', 'OnInitialize', function() session.hud = true end)
+  end)
+  pcall(function()
     ObserveBefore('PlayerPuppet', 'OnDetach', function()
+      session.ready = false
       Ride.state, Ride.follower = 'none', nil
     end)
   end)
@@ -90,6 +102,15 @@ registerForEvent('onOverlayClose', function() ui.overlay = false end)
 
 registerForEvent('onUpdate', function(dt)
   if not Game.GetPlayer() then return end
+  if not session.ready then
+    session.wait = session.wait + dt
+    if (session.hud and session.wait > 3) or session.wait > 30 then
+      session.ready = true
+      U.trace('the game is up: followers can come back')
+    else
+      return
+    end
+  end
   U.try('roster', R.update, dt)
   U.try('growth', G.update, dt)
   U.try('ride', Ride.update, dt)
