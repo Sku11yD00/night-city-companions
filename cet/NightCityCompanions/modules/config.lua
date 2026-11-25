@@ -8,7 +8,7 @@ C.defaults = {
   -- followers
   maxFollowers = 4,
   invulnerable = true,         -- recruited followers cannot die
-  respawnLost = true,          -- a follower who despawned (far away, after a load) is brought back near you
+  respawnLost = true,          -- a follower who despawned while you play is brought back near you (never after a load)
   teleportBeyond = 60,         -- metres: a follower further than this is brought to you
   recruitCopies = 'crowd',     -- recruit as a copy: 'crowd' (street people only), 'always', 'never'
   autoSaveContacts = true,     -- a new follower goes into your neurointerface contacts

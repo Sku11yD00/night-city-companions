@@ -98,10 +98,12 @@ function R.load()
       s.uid = s.uid or ('p' .. i .. '_' .. os.time())
       s.history = s.history or {}
       s.targetScale = s.targetScale or 1.0
-      -- rosters from the first version had no flags: everyone on them was following
-      if s.active == nil and s.saved == nil then s.active = true end
+      -- Nobody comes back by themselves when the game starts or a save loads: bringing people into a loading world
+      -- (or a new game's opening) crashes it. Contacts are called from the neurointerface when you want them.
+      if s.saved == nil then s.saved = true end
+      s.active = false
       s.scale, s.entity, s.lost = 1.0, nil, true
-      table.insert(R.people, s)
+      if s.saved then table.insert(R.people, s) end
     end
   end
   rebuild()
@@ -514,9 +516,15 @@ end
 -- After a load every handle is stale.
 function R.forgetHandles()
   leaving = {}
+  local kept = {}
   for _, p in ipairs(R.people) do
-    p.entity, p.lost, p.scale, p.spawnId, p.ownSpawn = nil, true, 1.0, nil, nil
+    p.entity, p.lost, p.scale, p.spawnId, p.ownSpawn, p.spawnTries = nil, true, 1.0, nil, nil, 0
+    p.active = false   -- see R.load: call them again when you want them
+    if p.saved then table.insert(kept, p) end
   end
+  R.people = kept
+  rebuild()
+  pcall(R.save)
 end
 
 R.load()
