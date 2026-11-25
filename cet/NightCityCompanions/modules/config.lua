@@ -12,6 +12,7 @@ C.defaults = {
   teleportBeyond = 60,         -- metres: a follower further than this is brought to you
   recruitCopies = 'crowd',     -- recruit as a copy: 'crowd' (street people only), 'always', 'never'
   autoSaveContacts = true,     -- a new follower goes into your neurointerface contacts
+  inCombat = 'cower',          -- 'cower': drop down and cover their head until the fight is over; 'fight'
   -- neurointerface
   callSeconds = 2.5,           -- the call rings this long before they arrive
   greetOnArrival = true,       -- a called contact says something when they arrive (needs the bridge)

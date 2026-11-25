@@ -379,6 +379,7 @@ end
 function R.dismiss(p)
   p = p or R.current()
   if not p then return end
+  if R.beforeDismiss then pcall(R.beforeDismiss, p) end
   U.trace('dismiss: back to normal size')
   if R.onDismiss then pcall(R.onDismiss, p) end
   U.trace('dismiss %s (contact %s, spawned by the mod %s)', p.name, tostring(p.saved), tostring(p.ownSpawn ~= nil))
@@ -493,7 +494,7 @@ function R.update(dt)
       pollSpawn(f)
     elseif alive(f) then
       f.lost = false
-      if not f.riding and U.dist(f.entity:GetWorldPosition(), pp) > C.v.teleportBeyond then
+      if not f.riding and not f.cowering and U.dist(f.entity:GetWorldPosition(), pp) > C.v.teleportBeyond then
         R.teleportToPlayer(f)
       end
     else

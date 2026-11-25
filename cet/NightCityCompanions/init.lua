@@ -27,6 +27,7 @@ local G = load('modules/growth') or { available = false, update = function() end
   nudge = function() end, reset = function() end, setTarget = function() end, lookUp = function() end }
 local Ride = load('modules/ride')
 local Neuro = load('modules/neuro')
+local Cower = load('modules/cower') or { update = function() end, releaseAll = function() end }
 
 local ui = { overlay = false, pinned = false, focusInput = false }
 local saveClock = 0
@@ -133,6 +134,7 @@ registerForEvent('onUpdate', function(dt)
   U.try('ride', Ride.update, dt)
   U.try('chat', Chat.update, dt)
   U.try('neurointerface', Neuro.update, dt)
+  U.try('cower', Cower.update, dt)
   if lastSelected ~= R.current() then
     lastSelected = R.current()
     pcall(Chat.publishContext)
@@ -289,6 +291,8 @@ local function settingsTab()
   end
   ImGui.NewLine()
   ImGui.TextWrapped('If someone will not follow after you recruit them, dismiss them and choose "everyone".')
+  v, c = ImGui.Checkbox('Take cover in fights (off: they fight)', (C.v.inCombat or 'cower') == 'cower')
+  if c then C.v.inCombat = v and 'cower' or 'fight' C.save() end
   v, c = ImGui.Checkbox('Called contacts greet you', C.v.greetOnArrival) if c then C.v.greetOnArrival = v C.save() end
   v, c = ImGui.SliderFloat('Call rings for', C.v.callSeconds, 0, 8, '%.1fs') if c then C.v.callSeconds = v C.save() end
   v, c = ImGui.SliderInt('Conversation remembered (turns)', C.v.historyTurns, 2, 40) if c then C.v.historyTurns = v C.save() end
