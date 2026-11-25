@@ -1,0 +1,8 @@
+# Needed
+anthropic>=2.14
+# Optional: --voice (read replies aloud)
+# pyttsx3
+# Optional: --listen (talk with your microphone, transcribed on your PC)
+# sounddevice
+# numpy
+# faster-whisper
