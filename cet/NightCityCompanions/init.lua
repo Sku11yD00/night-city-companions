@@ -80,8 +80,15 @@ registerHotkey('vrc_neuro_hangup', 'Neurointerface: hang up', function() Neuro.h
 -- or at most 30 seconds.
 local session = { ready = false, hud = false, wait = 0 }
 
+-- True in the main menu and character creation, where there is a player of sorts but no game to put anyone in.
+local function preGame()
+  local yes = false
+  pcall(function() yes = Game.GetSystemRequestsHandler():IsPreGame() end)
+  return yes
+end
+
 registerForEvent('onInit', function()
-  session.ready = Game.GetPlayer() ~= nil   -- the mod was reloaded in the middle of play
+  session.ready = Game.GetPlayer() ~= nil and not preGame()   -- the mod was reloaded in the middle of play
   -- after a load or a new game every entity handle is stale
   pcall(function()
     Observe('PlayerPuppet', 'OnGameAttached', function()
@@ -111,6 +118,7 @@ registerForEvent('onOverlayClose', function() ui.overlay = false end)
 
 registerForEvent('onUpdate', function(dt)
   if not Game.GetPlayer() then return end
+  if preGame() then session.ready, session.hud, session.wait = false, false, 0 return end
   if not session.ready then
     session.wait = session.wait + dt
     if (session.hud and session.wait > 3) or session.wait > 30 then
