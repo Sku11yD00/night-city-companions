@@ -75,6 +75,7 @@ neurointerface keys work with the overlay closed: each contact you flip to shows
   scaling tricks do not affect). Only what is drawn grows: collision, stride and navigation stay human-sized, so a
   giant's feet slide a little as they walk, and a very large one can flicker out at the screen edge. The plugin's
   hook point is specific to game version 2.5; RED4ext will not load it on another version.
+- **In fights** followers stay out of it: they stand still where they are until about 3 seconds after combat ends, then follow again (*Take cover in fights* in Settings; off makes them fight). The game's own cower animation could not be triggered from a mod: civilians' fear makes them run, and nothing keeps them in place.
 - **Riding** holds you at the mount point every frame, because the follower's collision does not grow and there is
   nothing to stand on.
 
