@@ -14,9 +14,25 @@ function U.say(fmt, ...)
 end
 
 -- A step written only to the log file (CET writes print to NightCityCompanions.log), to find where a crash happened.
+-- Lines also go to trace.log in the mod folder, opened and closed for every line so that a crash cannot lose them.
+local traceStarted = false
 function U.trace(fmt, ...)
   local ok, line = pcall(string.format, fmt, ...)
-  print('[Companions] ' .. (ok and line or tostring(fmt)))
+  line = ok and line or tostring(fmt)
+  print('[Companions] ' .. line)
+  pcall(function()
+    if not traceStarted then
+      traceStarted = true
+      -- keep the file small: start over when it is big
+      local f = io.open('trace.log', 'r')
+      local size = f and f:seek('end') or 0
+      if f then f:close() end
+      local w = io.open('trace.log', size > 512 * 1024 and 'w' or 'a')
+      if w then w:write('\n---- game started ', os.date('%Y-%m-%d %H:%M:%S'), '\n') w:close() end
+    end
+    local w = io.open('trace.log', 'a')
+    if w then w:write(os.date('%H:%M:%S '), line, '\n') w:close() end
+  end)
 end
 
 -- pcall that remembers and logs the failure once per distinct message.
@@ -27,6 +43,7 @@ function U.try(what, fn, ...)
   local msg = what .. ': ' .. tostring(a)
   U.lastError = msg
   if not seen[msg] then
+    U.trace('error: %s', msg)
     seen[msg] = true
     U.say('%s', msg)
   end

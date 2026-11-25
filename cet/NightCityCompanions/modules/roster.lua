@@ -185,18 +185,24 @@ local function makeFollower(entity)
 end
 
 -- Let a person go where they stand: no role, back in the attitude group they had before recruiting.
-local function releaseEntity(entity, group)
-  U.trace('dismiss: releasing the follower role')
-  U.try('dismiss', function()
-    entity:GetAIControllerComponent():SetAIRole(AINoRole.new())
-    pcall(function() entity.isPlayerCompanionCached = false end)
-    if group and group ~= '' and group ~= 'player' then
-      pcall(function() entity:GetAttitudeAgent():SetAttitudeGroup(CName.new(group)) end)
-    end
-    pcall(function()
-      Game.GetGodModeSystem():RemoveGodMode(entity:GetEntityID(), gameGodModeType.Invulnerable, CName.new(TAG))
-    end)
+local function releaseEntity(entity, group, keepRole)
+  -- one step at a time, each written to trace.log first, so a crash shows which step it was
+  U.trace('dismiss: removing god mode')
+  pcall(function()
+    Game.GetGodModeSystem():RemoveGodMode(entity:GetEntityID(), gameGodModeType.Invulnerable, CName.new(TAG))
   end)
+  U.trace('dismiss: clearing the companion flag')
+  pcall(function() entity.isPlayerCompanionCached = false end)
+  if group and group ~= '' and group ~= 'player' then
+    U.trace('dismiss: attitude group back to %s', group)
+    pcall(function() entity:GetAttitudeAgent():SetAttitudeGroup(CName.new(group)) end)
+  end
+  if keepRole then
+    U.trace('dismiss: leaving the role (they are about to be removed)')
+  else
+    U.trace('dismiss: clearing the follower role')
+    U.try('dismiss', function() entity:GetAIControllerComponent():SetAIRole(AINoRole.new()) end)
+  end
   U.trace('dismiss: released')
 end
 
@@ -355,12 +361,13 @@ end
 function R.dismiss(p)
   p = p or R.current()
   if not p then return end
+  U.trace('dismiss: back to normal size')
   if R.onDismiss then pcall(R.onDismiss, p) end
   U.trace('dismiss %s (contact %s, spawned by the mod %s)', p.name, tostring(p.saved), tostring(p.ownSpawn ~= nil))
   if alive(p) then
-    -- Always undo the companion setup (role, god mode), so nothing in the game (or a save made later) still points at
-    -- them. Someone going home is deleted only a few seconds after that: undoing and deleting in one frame crashes.
-    releaseEntity(p.entity, p.homeGroup)
+    -- Someone the mod spawned is removed a few seconds later, so their follower role is left to go with them:
+    -- clearing it is the step that crashed. God mode is always taken off, since the game keeps that by id.
+    releaseEntity(p.entity, p.homeGroup, p.ownSpawn ~= nil)
     -- anyone the mod spawned is taken out again, contact or not: a spawned person left behind is nobody's to clean up
     if p.ownSpawn then removeLater(p.entity, p.ownSpawn) end
   end
