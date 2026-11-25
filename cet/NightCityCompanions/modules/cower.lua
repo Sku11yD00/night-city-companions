@@ -36,24 +36,37 @@ local function exists(name)
   return ok and rec ~= nil
 end
 
--- Every status effect whose name sounds like fear, written once to trace.log.
-local function listFearEffects()
+-- Every record whose name sounds like fear, in the record types a cower could live in, written once to trace.log.
+local function listFearRecords()
   if listed then return end
   listed = true
-  pcall(function()
-    local found = 0
-    for _, rec in ipairs(TweakDB:GetRecords('gamedataStatusEffect_Record') or {}) do
-      local name = TDBID.ToStringDEBUG(rec:GetID())
-      local low = name:lower()
-      if low:find('cower') or low:find('fear') or low:find('panic') or low:find('terrif') or low:find('scare')
-        or low:find('crouch') or low:find('surrender') then
-        U.trace('status effect: %s', name)
-        found = found + 1
-        if found >= 60 then break end
+  local words = { 'cower', 'fear', 'panic', 'terrif', 'scare', 'crouch', 'surrender', 'duck', 'flinch', 'hands' }
+  for _, kind in ipairs({ 'gamedataStatusEffect_Record', 'gamedataReactionPreset_Record', 'gamedataAIAction_Record',
+      'gamedataStim_Record', 'gamedataAIActionSubCondition_Record' }) do
+    pcall(function()
+      local found = 0
+      for _, rec in ipairs(TweakDB:GetRecords(kind) or {}) do
+        local name = TDBID.ToStringDEBUG(rec:GetID())
+        local low = name:lower()
+        for _, w in ipairs(words) do
+          if low:find(w, 1, true) then
+            U.trace('%s: %s', kind, name)
+            found = found + 1
+            break
+          end
+        end
+        if found >= 80 then break end
       end
-    end
-    U.trace('status effects listed: %d', found)
-  end)
+      U.trace('%s: %d listed', kind, found)
+    end)
+  end
+end
+
+-- Crouched, the closest pose that can be set for sure: the stance the game's AI uses for cover.
+local function setStance(entity, crouch)
+  local state = crouch and gamedataNPCStanceState.Crouch or gamedataNPCStanceState.Stand
+  if pcall(function() NPCPuppet.ChangeStanceState(entity, state) end) then return true end
+  return pcall(function() entity:ChangeStanceState(state) end)
 end
 
 local function findEffect()
@@ -104,7 +117,9 @@ local function cower(f)
   hold(f)
   local id = findEffect()
   if id then f.cowerApplied = apply(f.entity, id) and id or nil end
-  U.trace('%s takes cover (%s)', f.name, f.cowerApplied and 'cowering' or 'holding still')
+  f.crouched = setStance(f.entity, true)
+  U.trace('%s takes cover (%s%s)', f.name, f.cowerApplied and 'cowering' or 'holding still',
+    f.crouched and ', crouched' or ', could not crouch')
 end
 
 local function getUp(f)
@@ -112,9 +127,10 @@ local function getUp(f)
   f.cowering = false
   if R.alive(f) then
     if f.cowerApplied then remove(f.entity, f.cowerApplied) end
+    if f.crouched then setStance(f.entity, false) end
     release(f)
   end
-  f.cowerApplied = nil
+  f.cowerApplied, f.crouched = nil, nil
   U.trace('%s gets back up', f.name)
 end
 
@@ -129,7 +145,7 @@ function K.update(dt)
     if not K.inCombat then
       K.inCombat = true
       U.trace('combat started')
-      listFearEffects()
+      listFearRecords()
     end
     for _, f in ipairs(R.list) do cower(f) end   -- also anyone who arrives mid-fight
   elseif K.inCombat then
