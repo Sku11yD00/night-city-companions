@@ -355,7 +355,8 @@ function R.dismiss(p)
     -- Always undo the companion setup (role, god mode), so nothing in the game (or a save made later) still points at
     -- them. Someone going home is deleted only a few seconds after that: undoing and deleting in one frame crashes.
     releaseEntity(p.entity, p.homeGroup)
-    if p.saved and p.ownSpawn then removeLater(p.entity, p.ownSpawn) end
+    -- anyone the mod spawned is taken out again, contact or not: a spawned person left behind is nobody's to clean up
+    if p.ownSpawn then removeLater(p.entity, p.ownSpawn) end
   end
   p.active, p.entity, p.ownSpawn, p.spawnId = false, nil, nil, nil
   if not p.saved then
