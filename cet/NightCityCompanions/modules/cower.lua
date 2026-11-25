@@ -63,7 +63,9 @@ local function cower(f)
   f.coverAt = pos(f)
   f.pinned = 0
   hold(f)
-  if f.homePreset then f.panicking = R.setReactions(f.entity, f.homePreset) end
+  -- Their own (civilian) fear was tried in game 2.5: they run, and neither AI commands nor teleporting every frame
+  -- keeps them in place. With the follower reactions they stand still, which is what is used.
+  if C.v.cowerWithFear and f.homePreset then f.panicking = R.setReactions(f.entity, f.homePreset) end
   U.trace('%s takes cover (%s)', f.name, f.panicking and 'their own fear, pinned in place' or 'holding still')
 end
 
