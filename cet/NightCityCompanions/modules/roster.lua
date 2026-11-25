@@ -159,6 +159,8 @@ end
 local function makeFollower(entity)
   local player = Game.GetPlayer()
   if not player then return false end
+  local group
+  pcall(function() group = Game.NameToString(entity:GetAttitudeAgent():GetAttitudeGroup()) end)
   local ok = U.try('make follower', function()
     local aic = entity:GetAIControllerComponent()
     local role = AIFollowerRole.new()
@@ -179,28 +181,42 @@ local function makeFollower(entity)
       Game.GetGodModeSystem():AddGodMode(entity:GetEntityID(), gameGodModeType.Invulnerable, CName.new(TAG))
     end)
   end
-  return ok
+  return ok, group
 end
 
-local function releaseEntity(entity)
+-- Let a person go where they stand: no role, back in the attitude group they had before recruiting.
+local function releaseEntity(entity, group)
+  U.trace('dismiss: releasing the follower role')
   U.try('dismiss', function()
     entity:GetAIControllerComponent():SetAIRole(AINoRole.new())
     pcall(function() entity.isPlayerCompanionCached = false end)
-    pcall(function() entity:GetAttitudeAgent():SetAttitudeGroup(CName.new('neutral')) end)
+    if group and group ~= '' and group ~= 'player' then
+      pcall(function() entity:GetAttitudeAgent():SetAttitudeGroup(CName.new(group)) end)
+    end
     pcall(function()
       Game.GetGodModeSystem():RemoveGodMode(entity:GetEntityID(), gameGodModeType.Invulnerable, CName.new(TAG))
     end)
   end)
+  U.trace('dismiss: released')
 end
 
 -- Take a person out of the world (the original of a copy; a called contact going home).
 local function removeEntity(entity, spawnId)
   if spawnId and canSpawn() then
+    U.trace('removing a spawned person')
     local ok, done = pcall(spawnDelete, spawnId)
+    U.trace('removed: %s', tostring(ok and done))
     if ok and done then return end
   end
+  U.trace('disposing a person')
   if pcall(function() entity:Dispose() end) then return end
   pcall(function() entity:GetEntity():Destroy() end)
+end
+
+-- People going home are deleted a moment after the mod has let go of them, never in the frame that changed them.
+local leaving = {}
+local function removeLater(entity, spawnId)
+  table.insert(leaving, { entity = entity, spawnId = spawnId, t = 0 })
 end
 
 -- Who the player is looking at, if it is a living person.
@@ -304,8 +320,10 @@ function R.recruit(entity)
     removeEntity(entity)
     U.say('%s (a street person) is joining you', p.name)
   else
-    if not makeFollower(entity) then return nil end
+    local ok, group = makeFollower(entity)
+    if not ok then return nil end
     p.entity, p.key = entity, U.idKey(entity)
+    if group and group ~= 'player' then p.homeGroup = group end
     U.say('%s is following you', p.name)
   end
   if not existing then table.insert(R.people, p) end
@@ -321,9 +339,14 @@ function R.dismiss(p)
   p = p or R.current()
   if not p then return end
   if R.onDismiss then pcall(R.onDismiss, p) end
+  U.trace('dismiss %s (contact %s, spawned by the mod %s)', p.name, tostring(p.saved), tostring(p.ownSpawn ~= nil))
   if alive(p) then
-    releaseEntity(p.entity)
-    if p.saved and p.ownSpawn then removeEntity(p.entity, p.ownSpawn) end
+    if p.saved and p.ownSpawn then
+      -- going home: they are deleted, so their AI is left alone (changing a role and deleting together is unsafe)
+      removeLater(p.entity, p.ownSpawn)
+    else
+      releaseEntity(p.entity, p.homeGroup)
+    end
   end
   p.active, p.entity, p.ownSpawn, p.spawnId = false, nil, nil, nil
   if not p.saved then
@@ -399,6 +422,14 @@ end
 -- Twice a second: keep handles fresh, attach people who were spawned, bring stragglers along.
 local tick = 0
 function R.update(dt)
+  for i = #leaving, 1, -1 do
+    local l = leaving[i]
+    l.t = l.t + dt
+    if l.t > 0.5 then
+      table.remove(leaving, i)
+      removeEntity(l.entity, l.spawnId)
+    end
+  end
   tick = tick + dt
   if tick < 0.5 then return end
   tick = 0
@@ -426,6 +457,7 @@ end
 
 -- After a load every handle is stale.
 function R.forgetHandles()
+  leaving = {}
   for _, p in ipairs(R.people) do
     p.entity, p.lost, p.scale, p.spawnId, p.ownSpawn = nil, true, 1.0, nil, nil
   end

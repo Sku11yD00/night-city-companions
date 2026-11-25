@@ -13,6 +13,12 @@ function U.say(fmt, ...)
   if #U.log > 60 then table.remove(U.log, 1) end
 end
 
+-- A step written only to the log file (CET writes print to NightCityCompanions.log), to find where a crash happened.
+function U.trace(fmt, ...)
+  local ok, line = pcall(string.format, fmt, ...)
+  print('[Companions] ' .. (ok and line or tostring(fmt)))
+end
+
 -- pcall that remembers and logs the failure once per distinct message.
 local seen = {}
 function U.try(what, fn, ...)
