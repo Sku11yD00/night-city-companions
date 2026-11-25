@@ -20,6 +20,8 @@
 // Not scaled: the collision capsule, the navigation agent, the ragdoll and the culling bounds.
 #include <RED4ext/RED4ext.hpp>
 #include <RED4ext/GameEngine.hpp>
+// worldAnimationSystem.hpp uses StaticArray without including it
+#include <RED4ext/Containers/StaticArray.hpp>
 #include <RED4ext/Scripting/Natives/entEntity.hpp>
 #include <RED4ext/Scripting/Natives/animAnimatedObject.hpp>
 #include <RED4ext/Scripting/Natives/worldAnimationSystem.hpp>
