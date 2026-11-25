@@ -1,10 +1,9 @@
 -- Night City Companions -- followers keep out of fights: when combat starts they drop down where they are, hands over
 -- their head, and stay put; a few seconds after it ends they get up and follow again.
 --
--- Combat is read from the player's state machine blackboard (the same flag the game's HUD uses). Cowering is the
--- game's own fear reaction, applied as a status effect; which status effect record that is has not been confirmed in
--- the game yet, so the first candidate that exists in TweakDB is used, and the first combat writes every fear-like
--- status effect the game has to trace.log so the right one can be picked.
+-- Combat is read from the player's state machine blackboard (the same flag the game's HUD uses). There is no "cower"
+-- status effect in the game (checked in game 2.5: only SpreadFear); the cower is the civilian fear-in-place reaction
+-- (ReactionsActions.*FearInPlace*), so for the fight a follower gets their own reactions back while held in place.
 local U = require('modules/util')
 local C = require('modules/config')
 local R = require('modules/roster')
@@ -12,12 +11,6 @@ local R = require('modules/roster')
 local K = {}
 K.inCombat = false
 
-local CANDIDATES = {
-  'BaseStatusEffect.Cower', 'BaseStatusEffect.Cowering', 'BaseStatusEffect.Terrified', 'BaseStatusEffect.Fear',
-  'BaseStatusEffect.Panic', 'BaseStatusEffect.Scared',
-}
-local effect           -- the TweakDBID in use, found on first combat
-local looked, listed = false, false
 local calm = 0         -- seconds out of combat since it last ended
 
 local function playerInCombat()
@@ -31,68 +24,14 @@ local function playerInCombat()
   return yes
 end
 
-local function exists(name)
-  local ok, rec = pcall(function() return TweakDB:GetRecord(name) end)
-  return ok and rec ~= nil
-end
-
--- Every record whose name sounds like fear, in the record types a cower could live in, written once to trace.log.
-local function listFearRecords()
-  if listed then return end
-  listed = true
-  local words = { 'cower', 'fear', 'panic', 'terrif', 'scare', 'crouch', 'surrender', 'duck', 'flinch', 'hands' }
-  for _, kind in ipairs({ 'gamedataStatusEffect_Record', 'gamedataReactionPreset_Record', 'gamedataAIAction_Record',
-      'gamedataStim_Record', 'gamedataAIActionSubCondition_Record' }) do
-    pcall(function()
-      local found = 0
-      for _, rec in ipairs(TweakDB:GetRecords(kind) or {}) do
-        local name = TDBID.ToStringDEBUG(rec:GetID())
-        local low = name:lower()
-        for _, w in ipairs(words) do
-          if low:find(w, 1, true) then
-            U.trace('%s: %s', kind, name)
-            found = found + 1
-            break
-          end
-        end
-        if found >= 80 then break end
-      end
-      U.trace('%s: %d listed', kind, found)
-    end)
-  end
-end
-
 -- Crouched, the closest pose that can be set for sure: the stance the game's AI uses for cover.
 local function setStance(entity, crouch)
-  local state = crouch and gamedataNPCStanceState.Crouch or gamedataNPCStanceState.Stand
+  local ok, state = pcall(function()
+    return crouch and gamedataNPCStanceState.Crouch or gamedataNPCStanceState.Stand
+  end)
+  if not ok then return false end
   if pcall(function() NPCPuppet.ChangeStanceState(entity, state) end) then return true end
   return pcall(function() entity:ChangeStanceState(state) end)
-end
-
-local function findEffect()
-  if looked then return effect end
-  looked = true
-  for _, name in ipairs(CANDIDATES) do
-    if exists(name) then
-      effect = TweakDBID.new(name)
-      U.trace('cower: using %s', name)
-      return effect
-    end
-  end
-  U.trace('cower: none of the candidate status effects exist; followers will only hold still')
-  return nil
-end
-
-local function apply(entity, id)
-  if pcall(function() StatusEffectHelper.ApplyStatusEffect(entity, id) end) then return true end
-  return pcall(function()
-    Game.GetStatusEffectSystem():ApplyStatusEffect(entity:GetEntityID(), id, entity:GetRecordID(), entity:GetEntityID())
-  end)
-end
-
-local function remove(entity, id)
-  if pcall(function() StatusEffectHelper.RemoveStatusEffect(entity, id) end) then return end
-  pcall(function() Game.GetStatusEffectSystem():RemoveStatusEffect(entity:GetEntityID(), id) end)
 end
 
 local function hold(f)
@@ -111,26 +50,67 @@ local function release(f)
   end
 end
 
+-- Taking cover: they stay where they are when the fight starts. With their own (civilian) reactions back for the
+-- fight, the game's fear-in-place reaction can play: dropping down, hands over their head. If their fear makes them
+-- run instead (more than a few metres from where they were), they are put back, given the follower reactions again
+-- and only crouch, for the rest of the session.
+local panicWorks = true
+
+local function pos(f)
+  local p
+  pcall(function() p = f.entity:GetWorldPosition() end)
+  return p
+end
+
+local function crouchOnly(f)
+  f.panicking = false
+  R.setReactions(f.entity, nil)
+  hold(f)
+  f.crouched = setStance(f.entity, true)
+end
+
 local function cower(f)
   if f.cowering or not R.alive(f) or f.riding then return end
   f.cowering = true
-  hold(f)
-  local id = findEffect()
-  if id then f.cowerApplied = apply(f.entity, id) and id or nil end
-  f.crouched = setStance(f.entity, true)
-  U.trace('%s takes cover (%s%s)', f.name, f.cowerApplied and 'cowering' or 'holding still',
-    f.crouched and ', crouched' or ', could not crouch')
+  f.coverAt = pos(f)
+  if panicWorks and f.homePreset then
+    f.panicking = R.setReactions(f.entity, f.homePreset)
+    hold(f)
+    pcall(function() f.entity:GetStimBroadcasterComponent():TriggerSingleBroadcast(f.entity, gamedataStimType.Terror) end)
+    U.trace('%s takes cover with their own fear reactions', f.name)
+  else
+    crouchOnly(f)
+    U.trace('%s takes cover (%s)', f.name, f.crouched and 'crouched' or 'holding still')
+  end
+end
+
+-- While the fight lasts: someone whose fear makes them run is brought back and only crouches.
+local function watch(f)
+  if not f.cowering or not f.panicking or not R.alive(f) or not f.coverAt then return end
+  local p = pos(f)
+  if p and U.dist(p, f.coverAt) > 3 then
+    panicWorks = false
+    U.trace('%s ran in fear: back to where they were, crouching instead (for this session)', f.name)
+    pcall(function()
+      local cmd = AITeleportCommand.new()
+      cmd.position = f.coverAt
+      cmd.rotation = 0
+      cmd.doNavTest = false
+      f.entity:GetAIControllerComponent():SendCommand(cmd)
+    end)
+    crouchOnly(f)
+  end
 end
 
 local function getUp(f)
   if not f.cowering then return end
   f.cowering = false
   if R.alive(f) then
-    if f.cowerApplied then remove(f.entity, f.cowerApplied) end
+    if f.panicking then R.setReactions(f.entity, nil) end
     if f.crouched then setStance(f.entity, false) end
     release(f)
   end
-  f.cowerApplied, f.crouched = nil, nil
+  f.panicking, f.crouched, f.coverAt = false, nil, nil
   U.trace('%s gets back up', f.name)
 end
 
@@ -145,9 +125,8 @@ function K.update(dt)
     if not K.inCombat then
       K.inCombat = true
       U.trace('combat started')
-      listFearRecords()
     end
-    for _, f in ipairs(R.list) do cower(f) end   -- also anyone who arrives mid-fight
+    for _, f in ipairs(R.list) do cower(f) watch(f) end   -- also anyone who arrives mid-fight
   elseif K.inCombat then
     calm = calm + dt
     if calm > 3 then

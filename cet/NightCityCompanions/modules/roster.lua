@@ -157,6 +157,14 @@ local function describe(entity)
   return d
 end
 
+-- A person's reaction preset: the given record, or the game's follower one.
+function R.setReactions(entity, preset)
+  return U.try('reactions', function()
+    entity.reactionComponent:SetReactionPreset(TweakDBInterface.GetReactionPresetRecord(
+      preset or TweakDBID.new('ReactionPresets.Follower')))
+  end)
+end
+
 -- The game's companion setup, on one person.
 local function makeFollower(entity)
   local player = Game.GetPlayer()
@@ -300,7 +308,8 @@ local function attach(p, entity)
   p.spawnTries, p.spawnTrouble = 0, nil
   p.entity, p.key, p.lost = entity, U.idKey(entity), false
   p.scale = p.targetScale or 1.0   -- arrive at their saved size, not growing into it
-  makeFollower(entity)
+  local _, _, preset = makeFollower(entity)
+  p.homePreset = preset or p.homePreset
   if p.onArrive then pcall(p.onArrive, p) p.onArrive = nil end
 end
 
