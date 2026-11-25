@@ -1,0 +1,9 @@
+build/
+dist/
+# what the mod and its bridge write at run time
+cet/NightCityCompanions/settings.json
+cet/NightCityCompanions/roster.json
+cet/NightCityCompanions/bridge/*.json
+cet/NightCityCompanions/bridge/*/*.json
+cet/NightCityCompanions/bridge/**/*.tmp
+cet/NightCityCompanions/companion_bridge/.venv/
