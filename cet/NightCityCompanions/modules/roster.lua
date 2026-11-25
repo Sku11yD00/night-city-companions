@@ -352,12 +352,10 @@ function R.dismiss(p)
   if R.onDismiss then pcall(R.onDismiss, p) end
   U.trace('dismiss %s (contact %s, spawned by the mod %s)', p.name, tostring(p.saved), tostring(p.ownSpawn ~= nil))
   if alive(p) then
-    if p.saved and p.ownSpawn then
-      -- going home: they are deleted, so their AI is left alone (changing a role and deleting together is unsafe)
-      removeLater(p.entity, p.ownSpawn)
-    else
-      releaseEntity(p.entity, p.homeGroup)
-    end
+    -- Always undo the companion setup (role, god mode), so nothing in the game (or a save made later) still points at
+    -- them. Someone going home is deleted only a few seconds after that: undoing and deleting in one frame crashes.
+    releaseEntity(p.entity, p.homeGroup)
+    if p.saved and p.ownSpawn then removeLater(p.entity, p.ownSpawn) end
   end
   p.active, p.entity, p.ownSpawn, p.spawnId = false, nil, nil, nil
   if not p.saved then
@@ -447,7 +445,7 @@ function R.update(dt)
   for i = #leaving, 1, -1 do
     local l = leaving[i]
     l.t = l.t + dt
-    if l.t > 0.5 then
+    if l.t > 3 then
       table.remove(leaving, i)
       removeEntity(l.entity, l.spawnId)
     end
