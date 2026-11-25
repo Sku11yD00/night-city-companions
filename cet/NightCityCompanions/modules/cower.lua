@@ -3,7 +3,7 @@
 --
 -- Combat is read from the player's state machine blackboard (the same flag the game's HUD uses). There is no "cower"
 -- status effect in the game (checked in game 2.5: only SpreadFear); the cower is the civilian fear-in-place reaction
--- (ReactionsActions.*FearInPlace*), so for the fight a follower gets their own reactions back while held in place.
+-- (ReactionsActions.*FearInPlace*). The crouch stance was tried and has no visible effect.
 local U = require('modules/util')
 local C = require('modules/config')
 local R = require('modules/roster')
@@ -24,16 +24,6 @@ local function playerInCombat()
   return yes
 end
 
--- Crouched, the closest pose that can be set for sure: the stance the game's AI uses for cover.
-local function setStance(entity, crouch)
-  local ok, state = pcall(function()
-    return crouch and gamedataNPCStanceState.Crouch or gamedataNPCStanceState.Stand
-  end)
-  if not ok then return false end
-  if pcall(function() NPCPuppet.ChangeStanceState(entity, state) end) then return true end
-  return pcall(function() entity:ChangeStanceState(state) end)
-end
-
 local function hold(f)
   U.try('cower hold', function()
     local cmd = NewObject('handle:AIHoldPositionCommand')
@@ -50,55 +40,41 @@ local function release(f)
   end
 end
 
--- Taking cover: they stay where they are when the fight starts. With their own (civilian) reactions back for the
--- fight, the game's fear-in-place reaction can play: dropping down, hands over their head. If their fear makes them
--- run instead (more than a few metres from where they were), they are put back, given the follower reactions again
--- and only crouch, for the rest of the session.
-local panicWorks = true
-
+-- Taking cover: they stay where they are when the fight starts, with their own (civilian) reactions back so the game's
+-- fear can play. Their fear wants them to run, and AI commands are ignored while they panic, so they are pinned to the
+-- spot with the teleportation facility (which works on anyone) whenever they move off it: with nowhere to run, the
+-- game's fear-in-place reaction (dropping down, hands over the head) is what is left.
 local function pos(f)
   local p
   pcall(function() p = f.entity:GetWorldPosition() end)
   return p
 end
 
-local function crouchOnly(f)
-  f.panicking = false
-  R.setReactions(f.entity, nil)
-  hold(f)
-  f.crouched = setStance(f.entity, true)
+local function put(entity, at)
+  pcall(function()
+    local rot = EulerAngles.new(0, 0, entity:GetWorldYaw())
+    Game.GetTeleportationFacility():Teleport(entity, at, rot)
+  end)
 end
 
 local function cower(f)
   if f.cowering or not R.alive(f) or f.riding then return end
   f.cowering = true
   f.coverAt = pos(f)
-  if panicWorks and f.homePreset then
-    f.panicking = R.setReactions(f.entity, f.homePreset)
-    hold(f)
-    pcall(function() f.entity:GetStimBroadcasterComponent():TriggerSingleBroadcast(f.entity, gamedataStimType.Terror) end)
-    U.trace('%s takes cover with their own fear reactions', f.name)
-  else
-    crouchOnly(f)
-    U.trace('%s takes cover (%s)', f.name, f.crouched and 'crouched' or 'holding still')
-  end
+  f.pinned = 0
+  hold(f)
+  if f.homePreset then f.panicking = R.setReactions(f.entity, f.homePreset) end
+  U.trace('%s takes cover (%s)', f.name, f.panicking and 'their own fear, pinned in place' or 'holding still')
 end
 
--- While the fight lasts: someone whose fear makes them run is brought back and only crouches.
+-- While the fight lasts: anyone who has moved off their spot is put back on it.
 local function watch(f)
-  if not f.cowering or not f.panicking or not R.alive(f) or not f.coverAt then return end
+  if not f.cowering or not R.alive(f) or not f.coverAt then return end
   local p = pos(f)
-  if p and U.dist(p, f.coverAt) > 3 then
-    panicWorks = false
-    U.trace('%s ran in fear: back to where they were, crouching instead (for this session)', f.name)
-    pcall(function()
-      local cmd = AITeleportCommand.new()
-      cmd.position = f.coverAt
-      cmd.rotation = 0
-      cmd.doNavTest = false
-      f.entity:GetAIControllerComponent():SendCommand(cmd)
-    end)
-    crouchOnly(f)
+  if p and U.dist(p, f.coverAt) > 0.6 then
+    put(f.entity, f.coverAt)
+    f.pinned = f.pinned + 1
+    if f.pinned == 1 or f.pinned % 100 == 0 then U.trace('%s tried to run: pinned (%d)', f.name, f.pinned) end
   end
 end
 
@@ -107,11 +83,12 @@ local function getUp(f)
   f.cowering = false
   if R.alive(f) then
     if f.panicking then R.setReactions(f.entity, nil) end
-    if f.crouched then setStance(f.entity, false) end
     release(f)
+    -- back at your side, whatever their fear did
+    pcall(R.teleportToPlayer, f)
   end
-  f.panicking, f.crouched, f.coverAt = false, nil, nil
-  U.trace('%s gets back up', f.name)
+  U.trace('%s gets back up (pinned %d times)', f.name, f.pinned or 0)
+  f.panicking, f.coverAt, f.pinned = false, nil, 0
 end
 
 function K.update(dt)
