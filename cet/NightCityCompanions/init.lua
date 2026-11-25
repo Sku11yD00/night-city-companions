@@ -12,13 +12,21 @@
 --
 -- Everything is reachable from the window (open the overlay; "Companions") and from hotkeys you bind in the
 -- overlay's Bindings page. The project's README has the install and test steps.
-local U = require('modules/util')
-local C = require('modules/config')
-local R = require('modules/roster')
-local Chat = require('modules/chat')
-local G = require('modules/growth')
-local Ride = require('modules/ride')
-local Neuro = require('modules/neuro')
+-- Each part is loaded on its own, so one that fails to load is reported in this mod's log instead of stopping the rest.
+local function load(name)
+  local ok, m, err = pcall(require, name)
+  if ok and type(m) == 'table' then return m end
+  print(string.format('[Companions] could not load %s: %s', name, tostring(ok and (err or m) or m)))
+  return nil
+end
+local U = load('modules/util')
+local C = load('modules/config')
+local R = load('modules/roster')
+local Chat = load('modules/chat')
+local G = load('modules/growth') or { available = false, update = function() end, releaseAll = function() end,
+  nudge = function() end, reset = function() end, setTarget = function() end, lookUp = function() end }
+local Ride = load('modules/ride')
+local Neuro = load('modules/neuro')
 
 local ui = { overlay = false, pinned = false, focusInput = false }
 local saveClock = 0
@@ -93,6 +101,7 @@ registerForEvent('onInit', function()
     end)
   end)
   Chat.setListening(false)
+  pcall(G.lookUp)
   U.say('loaded: %d followers on the roster; growth %s', #R.list,
     G.available and 'available' or 'NOT available (install the CompanionScale plugin)')
 end)

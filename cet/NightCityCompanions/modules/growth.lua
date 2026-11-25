@@ -9,11 +9,23 @@ local C = require('modules/config')
 local R = require('modules/roster')
 
 local G = {}
-local scaleNative = U.native('CompanionScale')
-G.available = scaleNative ~= nil
+-- Looked up on first use, not while the mod's files load: the game is not there yet at that point.
+local scaleNative
+local looked = false
+local function lookUp()
+  if not looked then
+    looked = true
+    local ok, f = pcall(U.native, 'CompanionScale')
+    scaleNative = ok and f or nil
+    G.available = scaleNative ~= nil
+  end
+  return scaleNative
+end
+G.available = false
+G.lookUp = lookUp
 
 local function send(f, scale)
-  if not scaleNative or not R.alive(f) then return false end
+  if not lookUp() or not R.alive(f) then return false end
   local ok, yes = pcall(scaleNative, f.entity, scale, C.v.scaleMode or 0)
   return ok and yes
 end
