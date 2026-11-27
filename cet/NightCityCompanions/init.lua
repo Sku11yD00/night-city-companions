@@ -26,6 +26,7 @@ local Chat = load('modules/chat')
 local G = load('modules/growth') or { available = false, update = function() end, releaseAll = function() end,
   nudge = function() end, reset = function() end, setTarget = function() end, lookUp = function() end }
 local Ride = load('modules/ride')
+local Solid = load('modules/solid') or { update = function() end }
 local Neuro = load('modules/neuro')
 local Cower = load('modules/cower') or { update = function() end, releaseAll = function() end }
 
@@ -132,6 +133,7 @@ registerForEvent('onUpdate', function(dt)
   U.try('roster', R.update, dt)
   U.try('growth', G.update, dt)
   U.try('ride', Ride.update, dt)
+  U.try('solid', Solid.update, dt, Ride.state ~= 'none')
   U.try('chat', Chat.update, dt)
   U.try('neurointerface', Neuro.update, dt)
   U.try('cower', Cower.update, dt)
@@ -237,6 +239,7 @@ local function sizeTab(f)
   end
   v, c = ImGui.Checkbox('Bigger moves slower', C.v.slowWithSize) if c then C.v.slowWithSize = v C.save() end
   v, c = ImGui.Checkbox('Full detail at any distance', C.v.fullDetail) if c then C.v.fullDetail = v C.save() end
+  v, c = ImGui.Checkbox('Solid body (a big follower pushes you out of the way)', C.v.solidBody) if c then C.v.solidBody = v C.save() end
   v, c = ImGui.SliderFloat('Largest size', C.v.maxScale, 1.0, 50.0, '%.1fx') if c then C.v.maxScale = v C.save() end
   ImGui.Separator()
   ImGui.TextWrapped('Scaling method: if the body looks wrong, try another one.')

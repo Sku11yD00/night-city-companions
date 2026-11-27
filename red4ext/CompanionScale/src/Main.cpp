@@ -34,6 +34,7 @@
 // worldAnimationSystem.hpp uses StaticArray without including it
 #include <RED4ext/Containers/StaticArray.hpp>
 #include <RED4ext/Scripting/Natives/entEntity.hpp>
+#include <RED4ext/Scripting/Natives/Vector4.hpp>
 #include <RED4ext/Scripting/Natives/animAnimatedObject.hpp>
 #include <RED4ext/Scripting/Natives/worldAnimationSystem.hpp>
 #include <RED4ext/Scripting/Natives/worldAnimationSystemScriptInterface.hpp>
@@ -115,6 +116,7 @@ struct Record
     int64_t at;                         // when the latest pass came
     void* shapeLast;                    // for the log: frames of one shape in a row
     uint32_t shapeN, shapeRun;
+    uintptr_t owner;                    // the person whose pose this is
     uint32_t cleanSlots;                // the whole pose at real size, as it was just before it was last scaled
     uint8_t clean[kMostBones * kBoneStride];
 };
@@ -142,6 +144,7 @@ Record* RecordOf(uint8_t* buf, uint64_t now)
     oldest->shapeN = oldest->shapeRun = oldest->cleanSlots = 0;
     oldest->scaledNow = oldest->wanted = false;
     oldest->at = 0;
+    oldest->owner = 0;
     // nothing written yet: NaN never compares equal, so every bone is taken as the engine's own
     for (auto& w : oldest->wrote)
         for (float& x : w) x = NAN;
@@ -356,6 +359,7 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         {
             memcpy(r->clean, buf, static_cast<size_t>(slots) * kBoneStride);
             r->cleanSlots = slots;
+            r->owner = p.entity;
             r->scaledNow = true;
         }
         for (uint32_t i = 0; i < slots; ++i)
@@ -895,6 +899,79 @@ void CompanionScaleBoneNative(RED4ext::IScriptable*, RED4ext::CStackFrame* aFram
     if (aOut) *aOut = ok;
 }
 
+// WHERE A BONE IS, for the script: its place in the person's own space (x right, y forward, z up, from the feet) at
+// their REAL size, worked out from the last pose that was scaled. The script multiplies by the size, which is right
+// for every bone below the Hips because the whole body is scaled from there. w is 1 when the bone was found.
+inline void Turn(const float* q, const float* v, float* out)
+{
+    // v turned by the quaternion q (x y z w)
+    const float tx = 2.f * (q[1] * v[2] - q[2] * v[1]);
+    const float ty = 2.f * (q[2] * v[0] - q[0] * v[2]);
+    const float tz = 2.f * (q[0] * v[1] - q[1] * v[0]);
+    out[0] = v[0] + q[3] * tx + (q[1] * tz - q[2] * ty);
+    out[1] = v[1] + q[3] * ty + (q[2] * tx - q[0] * tz);
+    out[2] = v[2] + q[3] * tz + (q[0] * ty - q[1] * tx);
+}
+
+bool BonePlace(uintptr_t entity, uint64_t name, float* out)
+{
+    bool found = false;
+    AcquireSRWLockShared(&g_lock);
+    for (const auto& p : g_people)
+    {
+        if (!p.on || p.entity != entity || !p.bones) continue;
+        int bone = -1;
+        for (uint32_t i = 0; i < p.bones; ++i)
+            if (p.names[i] == name) { bone = static_cast<int>(i); break; }
+        if (bone < 0) break;
+        AcquireSRWLockExclusive(&g_recordLock);
+        const Record* best = nullptr;
+        for (const auto& r : g_records)
+            if (r.owner == entity && r.cleanSlots == p.bones && (!best || r.used > best->used)) best = &r;
+        if (best)
+        {
+            // from the bone up to the root: each parent turns, sizes and then moves what is below it
+            float at[3] = {0, 0, 0};
+            int i = bone;
+            for (int depth = 0; i >= 0 && depth < 64; ++depth)
+            {
+                const float* f = reinterpret_cast<const float*>(best->clean + static_cast<size_t>(i) * kBoneStride);
+                if (i != bone)
+                {
+                    const float sized[3] = {at[0] * f[8], at[1] * f[9], at[2] * f[10]};
+                    Turn(f + 4, sized, at);
+                }
+                at[0] += f[0]; at[1] += f[1]; at[2] += f[2];
+                i = p.parents[i];
+            }
+            out[0] = at[0]; out[1] = at[1]; out[2] = at[2];
+            found = true;
+        }
+        ReleaseSRWLockExclusive(&g_recordLock);
+        break;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return found;
+}
+
+void CompanionBoneNative(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, RED4ext::Vector4* aOut, int64_t)
+{
+    RED4ext::Handle<RED4ext::IScriptable> entity;
+    RED4ext::CString name;
+    RED4ext::GetParameter(aFrame, &entity);
+    RED4ext::GetParameter(aFrame, &name);
+    aFrame->code++;
+    float at[3] = {0, 0, 0};
+    const char* text = name.c_str();
+    const bool ok = entity.instance && text && *text &&
+                    BonePlace(reinterpret_cast<uintptr_t>(entity.instance), RED4ext::CName(text).hash, at);
+    if (aOut)
+    {
+        aOut->X = at[0]; aOut->Y = at[1]; aOut->Z = at[2];
+        aOut->W = ok ? 1.f : 0.f;
+    }
+}
+
 void RegisterTypes() {}
 
 void PostRegisterTypes()
@@ -913,6 +990,12 @@ void PostRegisterTypes()
     bone->AddParam("String", "name");
     bone->SetReturnType("Bool");
     rtti->RegisterFunction(bone);
+    auto* place = RED4ext::CGlobalFunction::Create("CompanionBone", "CompanionBone", &CompanionBoneNative);
+    place->flags = flags;
+    place->AddParam("handle:IScriptable", "entity");
+    place->AddParam("String", "name");
+    place->SetReturnType("Vector4");
+    rtti->RegisterFunction(place);
 }
 }  // namespace
 
