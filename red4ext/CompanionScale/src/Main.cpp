@@ -20,6 +20,7 @@
 //               between joints -- what the game does, as far as testing shows; the Lua mod's default)
 //       mode 0  the Root's scale only (scale and offsets both inherited; in game this swells each body part in place)
 //       mode 1  every bone's translation and scale (nothing inherited)
+//       mode 3  every bone's scale (a bone's scale stretches its children's offsets but is not passed on)
 //
 // Not scaled: the collision capsule, the navigation agent, the ragdoll and the culling bounds.
 #include <RED4ext/RED4ext.hpp>
@@ -141,12 +142,12 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now)
         Describe(buf, slots, s, mode);
     }
     Record* r = RecordOf(buf, now);
-    const float tFactor = mode == 0 ? 1.f : s;
+    const float tFactor = (mode == 0 || mode == 3) ? 1.f : s;
     for (uint32_t i = 0; i < slots; ++i)
     {
         Put(LocalT(buf, i), r->base[i], r->wrote[i], tFactor);
         // scale: the Root alone carries it, unless nothing is inherited (mode 1)
-        Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, (mode == 1 || i == 0) ? s : 1.f);
+        Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, (mode == 1 || mode == 3 || i == 0) ? s : 1.f);
     }
     ReleaseSRWLockExclusive(&g_recordLock);
 }
@@ -517,14 +518,14 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (!slot) slot = free;
         if (slot)
         {
-            fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode == 1 || mode == 2) ? mode : 0);
+            fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode >= 1 && mode <= 3) ? mode : 0);
             slot->leaving = false;
             slot->on = true;
             slot->entity = key;
             slot->trackA = a;
             slot->trackB = b;
             slot->scale = scale;
-            slot->mode = (mode == 1 || mode == 2) ? mode : 0;
+            slot->mode = (mode >= 1 && mode <= 3) ? mode : 0;
             slot->asked = now;
             answer = true;
         }
@@ -537,7 +538,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
     if (fresh) InterlockedExchange(&g_dump, 6);
     if (fresh && g_sdk)
         g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
-                             scale, (mode == 1 || mode == 2) ? mode : 0, g_systemHow, search.names);
+                             scale, (mode >= 1 && mode <= 3) ? mode : 0, g_systemHow, search.names);
     return answer;
 }
 
