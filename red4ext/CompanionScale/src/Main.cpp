@@ -157,8 +157,8 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
     if (!g_sdk) return;
     const bool known = p.bones == slots;
     uint32_t movedT = 0, movedS = 0, odd = 0, bad = 0;
-    int far[4] = {-1, -1, -1, -1};
-    float farLen[4] = {0, 0, 0, 0};
+    int top[4] = {-1, -1, -1, -1};
+    float topLen[4] = {0, 0, 0, 0};
     for (uint32_t i = 0; i < slots; ++i)
     {
         const float* t = LocalT(buf, i);
@@ -179,10 +179,10 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
                                  own[2], t[0], t[1], t[2]);
         for (int k = 0; k < 4; ++k)
         {
-            if (len <= farLen[k]) continue;
-            for (int j = 3; j > k; --j) { far[j] = far[j - 1]; farLen[j] = farLen[j - 1]; }
-            far[k] = static_cast<int>(i);
-            farLen[k] = len;
+            if (len <= topLen[k]) continue;
+            for (int j = 3; j > k; --j) { top[j] = top[j - 1]; topLen[j] = topLen[j - 1]; }
+            top[k] = static_cast<int>(i);
+            topLen[k] = len;
             break;
         }
     }
@@ -192,11 +192,11 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
                          s, mode, slots, movedT, movedS, odd, bad);
     for (int k = 0; k < 4; ++k)
     {
-        if (far[k] < 0) continue;
-        const float* t = LocalT(buf, far[k]);
-        const float* sc = LocalS(buf, far[k]);
-        g_sdk->logger->InfoF(g_handle, "  farthest %d %s (parent %d): T %.3f %.3f %.3f S %.3f %.3f %.3f", far[k],
-                             known ? p.text[far[k]] : "?", known ? static_cast<int>(p.parents[far[k]]) : -2, t[0],
+        if (top[k] < 0) continue;
+        const float* t = LocalT(buf, top[k]);
+        const float* sc = LocalS(buf, top[k]);
+        g_sdk->logger->InfoF(g_handle, "  farthest %d %s (parent %d): T %.3f %.3f %.3f S %.3f %.3f %.3f", top[k],
+                             known ? p.text[top[k]] : "?", known ? static_cast<int>(p.parents[top[k]]) : -2, t[0],
                              t[1], t[2], sc[0], sc[1], sc[2]);
     }
 }
