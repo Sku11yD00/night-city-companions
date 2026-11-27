@@ -238,11 +238,20 @@ local function sizeTab(f)
   v, c = ImGui.SliderFloat('Largest size', C.v.maxScale, 1.0, 50.0, '%.1fx') if c then C.v.maxScale = v C.save() end
   ImGui.Separator()
   ImGui.TextWrapped('Scaling method: if the body looks wrong, try another one.')
-  local methods = { { 6, 'From the hips (default)' }, { 7, 'Below the hips' }, { 5, 'Test: head only' },
+  local methods = { { 6, 'From the hips (default)' }, { 7, 'Below the hips' }, { 5, 'Test: one part' },
     { 2, 'Whole body' }, { 0, 'Root bone only' } }
   for i, m in ipairs(methods) do
     if ImGui.RadioButton(m[2], C.v.scaleFrom == m[1]) then C.v.scaleFrom = m[1] C.save() end
     if i % 3 ~= 0 and i < #methods then ImGui.SameLine() end
+  end
+  if C.v.scaleFrom == 5 then
+    ImGui.Text('Part to resize: ' .. (G.testBone or 'Head'))
+    local parts = { 'Head', 'Neck', 'Spine3', 'Spine', 'Hips', 'LeftArm', 'LeftForeArm', 'LeftHand', 'LeftUpLeg',
+      'LeftLeg', 'LeftFoot' }
+    for i, name in ipairs(parts) do
+      if ImGui.Button(name .. '##vrc_part' .. i) then G.setTestBone(name) end
+      if i % 4 ~= 0 and i < #parts then ImGui.SameLine() end
+    end
   end
 end
 

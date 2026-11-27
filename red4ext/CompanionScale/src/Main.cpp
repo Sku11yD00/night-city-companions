@@ -74,8 +74,10 @@ struct Scaled
     bool boxKnown;                      // the animated object's own bounds, as the engine had them
     float box[8];
     int16_t parents[kMostBones];
+    uint64_t names[kMostBones];
 };
 Scaled g_people[kMost]{};
+volatile uint64_t g_testBone = RED4ext::CName("Head").hash;   // the one bone mode 5 scales
 SRWLOCK g_lock = SRWLOCK_INIT;
 volatile LONG g_anyOn = 0;
 
@@ -167,7 +169,7 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         case 2: moved = true; scaled = i == 0; break;
         case 3: moved = false; scaled = true; break;
         case 4: moved = true; scaled = known ? p.parents[i] < 0 : i == 0; break;
-        case 5: moved = false; scaled = known && me == p.head; break;
+        case 5: moved = false; scaled = known && p.names[i] == g_testBone; break;
         case 6: moved = me == hips; scaled = me == hips; break;
         case 7: moved = me == hips || belowHips; scaled = belowHips; break;
         default: moved = false; scaled = i == 0; break;
@@ -496,6 +498,7 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
         for (uint32_t i = 0; i < n; ++i)
         {
             out.parents[i] = rig->parentIndeces[i];
+            out.names[i] = rig->boneNames[i].hash;
             const char* name = rig->boneNames[i].ToString();
             if (name && out.head < 0 && std::strcmp(name, "Head") == 0) out.head = static_cast<int>(i);
             if (name && out.hips < 0 && std::strcmp(name, "Hips") == 0) out.hips = static_cast<int>(i);
@@ -659,6 +662,22 @@ void CompanionScaleNative(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, b
     if (aOut) *aOut = answer;
 }
 
+// CompanionScaleBone(name): which bone mode 5 scales (a test, to find the part of the body the game cannot scale).
+void CompanionScaleBoneNative(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, bool* aOut, int64_t)
+{
+    RED4ext::CString name;
+    RED4ext::GetParameter(aFrame, &name);
+    aFrame->code++;
+    const char* text = name.c_str();
+    const bool ok = text && *text;
+    if (ok)
+    {
+        g_testBone = RED4ext::CName(text).hash;
+        if (g_sdk) g_sdk->logger->InfoF(g_handle, "test bone: %s", text);
+    }
+    if (aOut) *aOut = ok;
+}
+
 void RegisterTypes() {}
 
 void PostRegisterTypes()
@@ -672,6 +691,11 @@ void PostRegisterTypes()
     func->AddParam("Int32", "mode");
     func->SetReturnType("Bool");
     rtti->RegisterFunction(func);
+    auto* bone = RED4ext::CGlobalFunction::Create("CompanionScaleBone", "CompanionScaleBone", &CompanionScaleBoneNative);
+    bone->flags = flags;
+    bone->AddParam("String", "name");
+    bone->SetReturnType("Bool");
+    rtti->RegisterFunction(bone);
 }
 }  // namespace
 

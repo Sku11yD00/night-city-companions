@@ -43,6 +43,17 @@ local function send(f, scale)
   return ok and yes
 end
 
+-- Which single bone the 'one part' test method resizes.
+function G.setTestBone(name)
+  local ok, f = pcall(U.native, 'CompanionScaleBone')
+  if ok and f then
+    local done, err = pcall(f, name)
+    if done then G.testBone = name else U.trace('test bone %s: %s', name, tostring(err)) end
+  else
+    U.trace('test bone: the plugin has no CompanionScaleBone')
+  end
+end
+
 function G.setTarget(f, target)
   if not f then return end
   f.targetScale = U.clamp(target, C.v.minScale, C.v.maxScale)
