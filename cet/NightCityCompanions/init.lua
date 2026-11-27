@@ -245,6 +245,9 @@ local function sizeTab(f)
   if ImGui.RadioButton('Every bone', C.v.scaleMethod == 1) then C.v.scaleMethod = 1 C.save() end
   ImGui.SameLine()
   if ImGui.RadioButton('Every bone, size only', C.v.scaleMethod == 3) then C.v.scaleMethod = 3 C.save() end
+  if ImGui.RadioButton('By skeleton', C.v.scaleMethod == 4) then C.v.scaleMethod = 4 C.save() end
+  ImGui.SameLine()
+  if ImGui.RadioButton('Test: head only', C.v.scaleMethod == 5) then C.v.scaleMethod = 5 C.save() end
 end
 
 local function rideTab(f)
