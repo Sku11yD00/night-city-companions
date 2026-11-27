@@ -10,14 +10,21 @@ local R = require('modules/roster')
 
 local G = {}
 -- Looked up on first use, not while the mod's files load: the game is not there yet at that point.
+-- Not found yet is asked again every few seconds (in the main menu the game's functions may not all be there).
 local scaleNative
-local looked = false
+local nextLook, looks = 0, 0
 local function lookUp()
-  if not looked then
-    looked = true
-    local ok, f = pcall(U.native, 'CompanionScale')
-    scaleNative = ok and f or nil
-    G.available = scaleNative ~= nil
+  if scaleNative then return scaleNative end
+  if os.clock() < nextLook then return nil end
+  nextLook = os.clock() + 5
+  looks = looks + 1
+  local ok, f = pcall(U.native, 'CompanionScale')
+  scaleNative = ok and f or nil
+  G.available = scaleNative ~= nil
+  if scaleNative or looks <= 3 then
+    local kind = 'none'
+    pcall(function() kind = type(rawget(_G, 'CompanionScale')) .. ' / Game: ' .. type(Game['CompanionScale']) end)
+    U.trace('growth plugin %s (look %d; global %s)', scaleNative and 'found' or 'NOT found', looks, kind)
   end
   return scaleNative
 end
@@ -55,7 +62,7 @@ end
 
 local refresh = 0
 function G.update(dt)
-  if not scaleNative then return end
+  if not lookUp() then return end
   refresh = refresh + dt
   local periodic = refresh >= 0.5
   if periodic then refresh = 0 end
