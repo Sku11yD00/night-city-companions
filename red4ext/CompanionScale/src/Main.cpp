@@ -170,40 +170,108 @@ RED4ext::world::AnimationSystem* WorldAnimationSystem()
     return iface ? iface->animationSystem : nullptr;
 }
 
-RED4ext::anim::AnimatedObject* FindInBucket(RED4ext::world::AnimationSystem* system, uint32_t bucketIndex,
-                                            RED4ext::ent::Entity* wanted)
+// What the last search saw, for the log: why a person could not be found is the whole question when sizes do nothing.
+struct Search
 {
+    bool system = false;
+    int byId = 0;          // buckets whose entity id table had the person
+    int byHandle = 0;      // slots whose entity handle was the person
+    char names[160] = {};  // names of the animated components seen on them
+    bool tracks = false;
+};
+
+void AddName(Search& s, const char* name)
+{
+    if (!name) name = "?";
+    const size_t used = std::strlen(s.names);
+    if (used + std::strlen(name) + 2 >= sizeof(s.names)) return;
+    if (used) std::strcat(s.names, ",");
+    std::strcat(s.names, name);
+}
+
+// One bucket: first by the entity id table (entity id -> slot), then by scanning the entity handles. A slot whose
+// animated component is "root" wins; otherwise the first slot found is used.
+RED4ext::anim::AnimatedObject* FindInBucket(RED4ext::world::AnimationSystem* system, uint32_t bucketIndex,
+                                            RED4ext::ent::Entity* wanted, uint64_t wantedId, Search& s)
+{
+    RED4ext::anim::AnimatedObject* first = nullptr;
     __try
     {
         auto& bucket = system->entitityBuckets[bucketIndex];
         const uint32_t count = bucket.entities.Size();
+        // the id table
+        auto& map = bucket.entityIDs;
+        if (map.size && map.indexTable && map.nodeList.nodes)
+        {
+            for (uint32_t i = 0; i < map.capacity; ++i)
+            {
+                for (uint32_t idx = map.indexTable[i]; idx != map.INVALID_INDEX; idx = map.nodeList.nodes[idx].next)
+                {
+                    auto& node = map.nodeList.nodes[idx];
+                    if (node.key.hash != wantedId) continue;
+                    ++s.byId;
+                    const uint32_t slot = node.value;
+                    if (slot < count && bucket.animatedObjects[slot])
+                    {
+                        auto* comp = bucket.animatedComponents[slot];
+                        const char* name = comp ? comp->name.ToString() : nullptr;
+                        AddName(s, name);
+                        if (name && std::strcmp(name, "root") == 0) return bucket.animatedObjects[slot];
+                        if (!first) first = bucket.animatedObjects[slot];
+                    }
+                }
+            }
+        }
+        // the handles
         for (uint32_t i = 0; i < count; ++i)
         {
             if (reinterpret_cast<RED4ext::ent::Entity*>(bucket.entities[i].instance) != wanted) continue;
-            auto* animated = bucket.animatedComponents[i];
-            const char* name = animated ? animated->name.ToString() : nullptr;
+            ++s.byHandle;
+            auto* comp = bucket.animatedComponents[i];
+            const char* name = comp ? comp->name.ToString() : nullptr;
+            AddName(s, name);
             if (name && std::strcmp(name, "root") == 0) return bucket.animatedObjects[i];
+            if (!first) first = bucket.animatedObjects[i];
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
     }
-    return nullptr;
+    return first;
 }
 
-RED4ext::anim::AnimatedObject* FindAnimatedObjectOf(RED4ext::ent::Entity* wanted)
+uint64_t EntityIdOf(RED4ext::ent::Entity* entity)
+{
+    __try
+    {
+        return entity->entityID.hash;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+RED4ext::anim::AnimatedObject* FindAnimatedObjectOf(RED4ext::ent::Entity* wanted, Search& s)
 {
     auto* system = WorldAnimationSystem();
+    s.system = system != nullptr;
     if (!system || !wanted) return nullptr;
+    const uint64_t id = EntityIdOf(wanted);
+    RED4ext::anim::AnimatedObject* fallback = nullptr;
     for (uint32_t b = 0; b < RED4ext::world::AnimationSystem::BucketCount; ++b)
-        if (auto* object = FindInBucket(system, b, wanted)) return object;
-    return nullptr;
+    {
+        auto* object = FindInBucket(system, b, wanted, id, s);
+        if (object && std::strstr(s.names, "root")) return object;
+        if (object && !fallback) fallback = object;
+    }
+    return fallback;
 }
 
 // The two track buffers a person's pose passes carry, from their animated object.
-bool TracksOf(RED4ext::ent::Entity* entity, uintptr_t& a, uintptr_t& b)
+bool TracksOf(RED4ext::ent::Entity* entity, uintptr_t& a, uintptr_t& b, Search& s)
 {
-    auto* object = FindAnimatedObjectOf(entity);
+    auto* object = FindAnimatedObjectOf(entity, s);
     if (!object) return false;
     __try
     {
@@ -212,7 +280,8 @@ bool TracksOf(RED4ext::ent::Entity* entity, uintptr_t& a, uintptr_t& b)
         const auto ownerB = *reinterpret_cast<const uintptr_t*>(base + 0x18);
         a = ownerA ? *reinterpret_cast<uintptr_t*>(ownerA + 0x40) : 0;
         b = ownerB ? *reinterpret_cast<uintptr_t*>(ownerB + 0x18) : 0;
-        return a || b;
+        s.tracks = a || b;
+        return s.tracks;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -228,7 +297,19 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
     if (scale < kLeast) scale = kLeast;
     if (scale > kMostScale) scale = kMostScale;
     uintptr_t a = 0, b = 0;
-    const bool found = !release && TracksOf(reinterpret_cast<RED4ext::ent::Entity*>(entityPtr), a, b);
+    Search search;
+    const bool found = !release && TracksOf(reinterpret_cast<RED4ext::ent::Entity*>(entityPtr), a, b, search);
+    // a person who cannot be scaled is reported once (per person), with what the search saw
+    static uintptr_t s_reported = 0;
+    if (!release && !found && s_reported != key && g_sdk)
+    {
+        s_reported = key;
+        g_sdk->logger->InfoF(g_handle,
+                             "cannot scale a person: animation system %s, in id tables %d, by handle %d, "
+                             "components [%s], track buffers %s",
+                             search.system ? "found" : "MISSING", search.byId, search.byHandle, search.names,
+                             search.tracks ? "found" : "missing");
+    }
     const uint64_t now = GetTickCount64();
     bool answer = false;
     bool fresh = false;
