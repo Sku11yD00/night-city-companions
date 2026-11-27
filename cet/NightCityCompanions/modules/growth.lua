@@ -33,7 +33,7 @@ G.lookUp = lookUp
 
 local function send(f, scale)
   if not lookUp() or not R.alive(f) then return false end
-  local ok, yes = pcall(scaleNative, f.entity, scale, C.v.scaleFrom or 6)
+  local ok, yes = pcall(scaleNative, f.entity, scale, (C.v.scaleFrom or 6) + 10 * (C.v.scaleWhen or 2))
   -- one line each time the answer changes, so trace.log shows whether the plugin found the person
   local answer = ok and (yes and 'yes' or 'no') or ('error ' .. tostring(yes))
   if f.lastScaleAnswer ~= answer then

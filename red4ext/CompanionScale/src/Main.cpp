@@ -66,6 +66,7 @@ struct Scaled
     uintptr_t trackA, trackB;           // the buffers this person's pose passes carry
     float scale;
     int mode;
+    int when;                           // which passes of a frame carry the scale (see Write)
     uint64_t asked;
     bool leaving;                       // asked to be let go: the bones are being put back
     uint64_t leftAt;
@@ -98,6 +99,8 @@ struct Record
     uint64_t used;
     float base[kMostBones][6];          // translation xyz, scale xyz
     float wrote[kMostBones][6];
+    uint32_t pass;                      // which pass of this frame this is, counted from the animation's own
+    uint32_t passes;                    // how many passes the last whole frame had
 };
 Record g_records[kRecords]{};
 SRWLOCK g_recordLock = SRWLOCK_INIT;
@@ -152,7 +155,7 @@ void Describe(uint8_t* buf, uint32_t slots, float s, int mode)
 volatile LONG g_surveyLeft = 0;
 uint64_t g_surveyNext = 0, g_surveyUntil = 0;
 
-void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, float s, int mode)
+void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, float s, int mode, bool fresh)
 {
     if (!g_sdk) return;
     const bool known = p.bones == slots;
@@ -187,9 +190,9 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
         }
     }
     g_sdk->logger->InfoF(g_handle,
-                         "survey: scale %.2f mode %d, %u bones; the engine rewrote %u offsets and %u scales; %u bones "
-                         "carry a scale of the engine's own, %u are not numbers or huge",
-                         s, mode, slots, movedT, movedS, odd, bad);
+                         "survey: scale %.2f mode %d when %d, %s pass %u (last frame had %u); the engine rewrote %u "
+                         "offsets and %u scales; %u bones carry a scale of the engine's own, %u are not numbers or huge",
+                         s, mode, p.when, fresh ? "animation" : "later", r->pass, r->passes, movedT, movedS, odd, bad);
     for (int k = 0; k < 4; ++k)
     {
         if (top[k] < 0) continue;
@@ -211,16 +214,37 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         Describe(buf, slots, s, mode);
     }
     Record* r = RecordOf(buf, now);
-    if (g_surveyLeft > 0)
+    // THE PASSES OF A FRAME. The hook sees a person's buffer several times a frame. The first time it holds the
+    // animation's fresh pose; between the later times the engine runs its own corrections (look-at, muscles, helper
+    // joints -- some 250 bones), and those do not understand a scaled parent: they put their bones back in the wrong
+    // place and the body tears. So the corrections must see the person at their real size. `when` says which passes
+    // carry the scale: 0 all of them (the tearing), 1 all but the animation's, 2 the last pass of the frame only (as
+    // many passes as the frame before had). On the other passes every bone is put back.
     {
-        InterlockedDecrement(&g_surveyLeft);
-        Survey(buf, slots, r, p, s, mode);
-    }
-    else if (now >= g_surveyNext && now < g_surveyUntil)
-    {
-        g_surveyNext = now + 2500;
-        InterlockedExchange(&g_surveyLeft, 1);
-        Survey(buf, slots, r, p, s, mode);
+        const uint32_t watch = (p.bones == slots && p.hips >= 0) ? static_cast<uint32_t>(p.hips) : (slots > 2 ? 2u : 0u);
+        const float* t = LocalT(buf, watch);
+        const bool fresh = !(t[0] == r->wrote[watch][0] && t[1] == r->wrote[watch][1] && t[2] == r->wrote[watch][2]);
+        if (fresh)
+        {
+            if (r->pass) r->passes = r->pass;
+            r->pass = 1;
+        }
+        else
+            ++r->pass;
+        if (g_surveyLeft > 0)
+        {
+            InterlockedDecrement(&g_surveyLeft);
+            Survey(buf, slots, r, p, s, mode, fresh);
+        }
+        else if (now >= g_surveyNext && now < g_surveyUntil)
+        {
+            g_surveyNext = now + 2500;
+            InterlockedExchange(&g_surveyLeft, r->passes > 1 ? r->passes : 1);
+            Survey(buf, slots, r, p, s, mode, fresh);
+        }
+        if (p.when == 1 && fresh) s = 1.f;
+        if (p.when == 2 && r->pass < r->passes) s = 1.f;
+        if (p.when == 2 && r->passes == 0) s = 1.f;
     }
     const bool known = p.bones == slots;   // the rig read for this person describes this buffer
     const int hips = known ? p.hips : -1;
@@ -640,6 +664,10 @@ bool TracksOf(RED4ext::ent::Entity* entity, uintptr_t& a, uintptr_t& b, Search& 
 
 bool SetScale(void* entityPtr, float scale, int32_t mode)
 {
+    // the script's mode number carries both: tens = when, units = how
+    int when = mode / 10;
+    if (when < 0 || when > 2) when = 0;
+    mode = mode % 10;
     if (!entityPtr) return false;
     const auto key = reinterpret_cast<uintptr_t>(entityPtr);
     const bool release = !(scale > 0.f) || (scale > .999f && scale < 1.001f);
@@ -689,6 +717,8 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (slot)
         {
             fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode >= 1 && mode <= 7) ? mode : 0);
+            if (slot->when != when) fresh = true;
+            slot->when = when;
             slot->leaving = false;
             if (fresh || slot->bones == 0) ReadRig(object, *slot);
             if (slot->entity != key || !slot->on) slot->boxKnown = false;

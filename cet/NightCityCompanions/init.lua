@@ -244,6 +244,12 @@ local function sizeTab(f)
     if ImGui.RadioButton(m[2], C.v.scaleFrom == m[1]) then C.v.scaleFrom = m[1] C.save() end
     if i % 3 ~= 0 and i < #methods then ImGui.SameLine() end
   end
+  ImGui.Text('When in the frame:')
+  local whens = { { 2, 'Last step only (default)' }, { 1, 'After the animation' }, { 0, 'Every step' } }
+  for i, w in ipairs(whens) do
+    if ImGui.RadioButton(w[2] .. '##vrc_when', C.v.scaleWhen == w[1]) then C.v.scaleWhen = w[1] C.save() end
+    if i < #whens then ImGui.SameLine() end
+  end
   if C.v.scaleFrom == 5 then
     ImGui.Text('Part to resize: ' .. (G.testBone or 'Head'))
     local parts = { 'Head', 'Neck', 'Spine3', 'Spine', 'Hips', 'LeftArm', 'LeftForeArm', 'LeftHand', 'LeftUpLeg',
