@@ -22,6 +22,7 @@ C.defaults = {
   speakReplies = false,        -- the bridge reads replies aloud (needs --voice on the bridge)
   subtitleSeconds = 8,
   -- growth
+  slowWithSize = true,         -- a bigger follower moves slower (and a smaller one quicker), as weight would have it
   scaleWhen = 2,               -- which passes of a frame carry the size: 2 the last only, 1 all but the animation's, 0 all
   scaleFrom = 6,               -- how the size is applied: 6 from the Hips (see red4ext/CompanionScale for the rest)
   growSpeed = 0.5,             -- scale units per second when changing size

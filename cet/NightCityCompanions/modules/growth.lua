@@ -54,6 +54,40 @@ function G.setTestBone(name)
   end
 end
 
+-- A giant that moves at a person's pace looks weightless, so time runs slower for a bigger follower: by the square
+-- root of the size, as a pendulum's swing goes. Set again only when the size has moved enough to see.
+local function pace(scale)
+  if not C.v.slowWithSize then return 1 end
+  return U.clamp(1 / math.sqrt(math.max(scale, 0.05)), 0.12, 1.6)
+end
+
+local function setPace(f, scale)
+  local want = pace(scale)
+  -- said again every ten seconds: a follower called back is a new body that has not been told
+  if f.pace and math.abs(f.pace - want) < 0.02 and os.clock() - (f.paceAt or 0) < 10 then return end
+  f.paceAt = os.clock()
+  local reason = CName.new('CompanionSize')
+  local ok, err
+  if math.abs(want - 1) < 0.02 then
+    ok, err = pcall(function() f.entity:UnsetIndividualTimeDilation(CName.new('')) end)
+  else
+    ok, err = pcall(function()
+      f.entity:SetIndividualTimeDilation(reason, want, 100000, CName.new(''), CName.new(''), false)
+    end)
+    if not ok then
+      ok, err = pcall(function()
+        TimeDilationHelper.SetIndividualTimeDilation(f.entity, reason, want, 100000, CName.new(''), CName.new(''))
+      end)
+    end
+  end
+  if f.paceAnswer ~= ok then
+    f.paceAnswer = ok
+    U.trace('pace %s: %.2f %s', f.name, want, ok and 'set' or ('FAILED ' .. tostring(err)))
+  end
+  f.pace = want
+end
+G.setPace = setPace
+
 function G.setTarget(f, target)
   if not f then return end
   f.targetScale = U.clamp(target, C.v.minScale, C.v.maxScale)
@@ -94,7 +128,10 @@ function G.update(dt)
     end
     if moving or periodic then
       if not R.alive(f) then f.scale = 1.0
-      else send(f, f.scale) end
+      else
+        send(f, f.scale)
+        if periodic then setPace(f, f.scale) end
+      end
     end
   end
 end
@@ -106,6 +143,6 @@ function G.releaseAll()
   end
 end
 
-R.onDismiss = function(f) if R.alive(f) then send(f, 1.0) end end
+R.onDismiss = function(f) if R.alive(f) then send(f, 1.0) setPace(f, 1.0) end end
 
 return G

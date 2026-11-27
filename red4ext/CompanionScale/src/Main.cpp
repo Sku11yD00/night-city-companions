@@ -101,8 +101,14 @@ struct Record
     float wrote[kMostBones][6];
     uint32_t pass;                      // which pass of this frame this is, counted from the animation's own
     uint32_t passes;                    // how many passes the last whole frame had
+    bool counted;                       // this frame began with the animation's pose, so its passes can be counted
+    float watched[7];                   // the Hips' offset and rotation as they were left on the last pass
 };
 Record g_records[kRecords]{};
+thread_local void* t_a1 = nullptr;      // the hooked call's other arguments, for the log
+thread_local void* t_a3 = nullptr;
+thread_local unsigned t_a4 = 0;
+volatile LONG g_oddFrames = 0;          // frames that had another number of passes than the one before
 SRWLOCK g_recordLock = SRWLOCK_INIT;
 volatile LONG g_dump = 0;               // how many more passes to describe in the log
 
@@ -190,9 +196,11 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
         }
     }
     g_sdk->logger->InfoF(g_handle,
-                         "survey: scale %.2f mode %d when %d, %s pass %u (last frame had %u); the engine rewrote %u "
-                         "offsets and %u scales; %u bones carry a scale of the engine's own, %u are not numbers or huge",
-                         s, mode, p.when, fresh ? "animation" : "later", r->pass, r->passes, movedT, movedS, odd, bad);
+                         "survey: scale %.2f mode %d when %d, %s pass %u (last frame had %u), call %p %p %u; the engine "
+                         "rewrote %u offsets and %u scales; %u bones carry a scale of the engine's own, %u are not "
+                         "numbers or huge",
+                         s, mode, p.when, fresh ? "animation" : "later", r->pass, r->passes, t_a1, t_a3, t_a4, movedT,
+                         movedS, odd, bad);
     for (int k = 0; k < 4; ++k)
     {
         if (top[k] < 0) continue;
@@ -222,12 +230,33 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
     // many passes as the frame before had). On the other passes every bone is put back.
     {
         const uint32_t watch = (p.bones == slots && p.hips >= 0) ? static_cast<uint32_t>(p.hips) : (slots > 2 ? 2u : 0u);
-        const float* t = LocalT(buf, watch);
-        const bool fresh = !(t[0] == r->wrote[watch][0] && t[1] == r->wrote[watch][1] && t[2] == r->wrote[watch][2]);
+        // A new frame shows in the Hips: the animation gives them a new offset or rotation, and nothing between the
+        // passes touches them. A pose that stands perfectly still gives no such sign, so a frame also ends when it
+        // has had as many passes as the last counted one.
+        const float* w = reinterpret_cast<const float*>(buf + watch * kBoneStride);
+        bool fresh = false;
+        for (int k = 0; k < 3; ++k) fresh = fresh || w[k] != r->wrote[watch][k];
+        for (int k = 0; k < 4; ++k) fresh = fresh || w[4 + k] != r->watched[3 + k];
         if (fresh)
         {
-            if (r->pass) r->passes = r->pass;
+            if (r->counted && r->pass)
+            {
+                if (r->passes && r->passes != r->pass)
+                {
+                    const LONG n = InterlockedIncrement(&g_oddFrames);
+                    if (g_sdk && (n <= 30 || n % 500 == 0))
+                        g_sdk->logger->InfoF(g_handle, "odd frame %d: %u passes where the one before had %u", n,
+                                             r->pass, r->passes);
+                }
+                r->passes = r->pass;
+            }
             r->pass = 1;
+            r->counted = true;
+        }
+        else if (r->passes && r->pass >= r->passes)
+        {
+            r->pass = 1;
+            r->counted = false;
         }
         else
             ++r->pass;
@@ -267,6 +296,11 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         }
         Put(LocalT(buf, i), r->base[i], r->wrote[i], moved ? s : 1.f);
         Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, scaled ? s : 1.f);
+    }
+    {
+        const uint32_t watch = (known && hips >= 0) ? static_cast<uint32_t>(hips) : (slots > 2 ? 2u : 0u);
+        const float* w = reinterpret_cast<const float*>(buf + watch * kBoneStride);
+        for (int k = 0; k < 4; ++k) r->watched[3 + k] = w[4 + k];
     }
     ReleaseSRWLockExclusive(&g_recordLock);
 }
@@ -317,6 +351,9 @@ PoseApply_t g_originalPoseApply = nullptr;
 void* DetouredPoseApply(void* a1, void* a2, void* a3, unsigned int a4)
 {
     void* result = g_originalPoseApply(a1, a2, a3, a4);
+    t_a1 = a1;
+    t_a3 = a3;
+    t_a4 = a4;
     Apply(a2);
     return result;
 }

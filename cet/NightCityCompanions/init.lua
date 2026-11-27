@@ -235,6 +235,7 @@ local function sizeTab(f)
     v, c = ImGui.SliderFloat('Growth per minute', C.v.gradualPerMinute, 0.01, 1.0, '%.2fx')
     if c then C.v.gradualPerMinute = v C.save() end
   end
+  v, c = ImGui.Checkbox('Bigger moves slower', C.v.slowWithSize) if c then C.v.slowWithSize = v C.save() end
   v, c = ImGui.SliderFloat('Largest size', C.v.maxScale, 1.0, 50.0, '%.1fx') if c then C.v.maxScale = v C.save() end
   ImGui.Separator()
   ImGui.TextWrapped('Scaling method: if the body looks wrong, try another one.')
