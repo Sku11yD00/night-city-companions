@@ -33,6 +33,7 @@
 #include <RED4ext/Scripting/Natives/Generated/ent/AnimatedComponent.hpp>
 
 #include <windows.h>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -45,6 +46,7 @@ RED4ext::v1::PluginHandle g_handle = nullptr;
 
 constexpr int kMost = 8;                // people scaled at once
 constexpr uint64_t kStaleMs = 2500;     // not asked about for this long: let go
+constexpr uint64_t kRestoreMs = 1500;   // how long a person let go has their bones put back
 constexpr int kBoneStride = 48;         // QsTransform: Translation (16), Rotation (16), Scale (16)
 constexpr int kTransOff = 0, kScaleOff = 32;
 constexpr uint32_t kMostBones = 2048;
@@ -58,6 +60,8 @@ struct Scaled
     float scale;
     int mode;
     uint64_t asked;
+    bool leaving;                       // asked to be let go: the bones are being put back
+    uint64_t leftAt;
 };
 Scaled g_people[kMost]{};
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -66,62 +70,85 @@ volatile LONG g_anyOn = 0;
 inline float* LocalT(uint8_t* buf, uint32_t i) { return reinterpret_cast<float*>(buf + i * kBoneStride + kTransOff); }
 inline float* LocalS(uint8_t* buf, uint32_t i) { return reinterpret_cast<float*>(buf + i * kBoneStride + kScaleOff); }
 
-// The engine can hand the same buffer to the hook twice, so a write must not land on top of itself. Mode 0 sets the
-// Root's scale outright (the same however often it runs). Modes 1 and 2 multiply, so the last few buffers it wrote are
-// remembered with what one bone was left at; a buffer that still has that is already done.
-struct Done { uint8_t* buf; float t[3]; };
-Done g_done[16]{};
-volatile LONG g_doneNext = 0;
-uint32_t WatchBone(uint32_t slots) { return slots > 2 ? 2u : 0u; }   // Hips on the man/woman base rigs
-
-bool AlreadyDone(uint8_t* buf, uint32_t slots)
+// WRITES STAY IN THE BUFFER. The engine does not rebuild a pose from nothing each frame: a bone the playing animation
+// does not move keeps whatever was last written to it, and the same buffer can reach the hook several times a frame.
+// So nothing here multiplies what it finds. For each buffer the plugin remembers, per bone, the engine's own value
+// (base) and what it last wrote (wrote): a bone that still holds what was written is the plugin's own work and is
+// rebuilt from base; anything else is the engine's fresh value and becomes the new base. Scale 1 therefore puts every
+// bone back, which is how a person is let go.
+constexpr int kRecords = 48;
+struct Record
 {
-    const float* t = LocalT(buf, WatchBone(slots));
-    for (const auto& d : g_done)
-        if (d.buf == buf && d.t[0] == t[0] && d.t[1] == t[1] && d.t[2] == t[2]) return true;
-    return false;
+    uint8_t* buf;
+    uint64_t used;
+    float base[kMostBones][6];          // translation xyz, scale xyz
+    float wrote[kMostBones][6];
+};
+Record g_records[kRecords]{};
+SRWLOCK g_recordLock = SRWLOCK_INIT;
+volatile LONG g_dump = 0;               // how many more passes to describe in the log
+
+Record* RecordOf(uint8_t* buf, uint64_t now)
+{
+    Record* oldest = &g_records[0];
+    for (auto& r : g_records)
+    {
+        if (r.buf == buf) { r.used = now; return &r; }
+        if (r.used < oldest->used) oldest = &r;
+    }
+    oldest->buf = buf;
+    oldest->used = now;
+    // nothing written yet: NaN never compares equal, so every bone is taken as the engine's own
+    for (auto& w : oldest->wrote)
+        for (float& x : w) x = NAN;
+    return oldest;
 }
 
-void NoteDone(uint8_t* buf, uint32_t slots)
+inline void Put(float* cur, float* base, float* wrote, float factor)
 {
-    const LONG i = (InterlockedIncrement(&g_doneNext) - 1) & 15;
-    const float* t = LocalT(buf, WatchBone(slots));
-    g_done[i].buf = buf;
-    g_done[i].t[0] = t[0]; g_done[i].t[1] = t[1]; g_done[i].t[2] = t[2];
+    if (!(cur[0] == wrote[0] && cur[1] == wrote[1] && cur[2] == wrote[2]))
+    {
+        base[0] = cur[0]; base[1] = cur[1]; base[2] = cur[2];
+    }
+    for (int k = 0; k < 3; ++k)
+    {
+        cur[k] = base[k] * factor;
+        wrote[k] = cur[k];
+    }
 }
 
-void Write(uint8_t* buf, uint32_t slots, const Scaled& p)
+void Describe(uint8_t* buf, uint32_t slots, float s, int mode)
 {
-    const float s = p.scale;
-    if (p.mode == 1)
+    if (!g_sdk) return;
+    for (uint32_t i = 0; i < slots && i < 4; ++i)
     {
-        if (AlreadyDone(buf, slots)) return;
-        for (uint32_t i = 0; i < slots; ++i)
-        {
-            float* t = LocalT(buf, i);
-            float* sc = LocalS(buf, i);
-            t[0] *= s; t[1] *= s; t[2] *= s;
-            sc[0] *= s; sc[1] *= s; sc[2] *= s;
-        }
-        NoteDone(buf, slots);
+        const float* f = reinterpret_cast<const float*>(buf + i * kBoneStride);
+        g_sdk->logger->InfoF(g_handle,
+                             "pose %p, %u bones, scale %.2f mode %d, bone %u: T %.3f %.3f %.3f %.3f  R %.3f %.3f %.3f "
+                             "%.3f  S %.3f %.3f %.3f %.3f",
+                             buf, slots, s, mode, i, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9],
+                             f[10], f[11]);
     }
-    else if (p.mode == 2)
+}
+
+// s is 1 for a person being let go.
+void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now)
+{
+    AcquireSRWLockExclusive(&g_recordLock);
+    if (g_dump > 0)
     {
-        if (AlreadyDone(buf, slots)) return;
-        for (uint32_t i = 0; i < slots; ++i)
-        {
-            float* t = LocalT(buf, i);
-            t[0] *= s; t[1] *= s; t[2] *= s;
-        }
-        float* sc = LocalS(buf, 0);
-        sc[0] = s; sc[1] = s; sc[2] = s;
-        NoteDone(buf, slots);
+        InterlockedDecrement(&g_dump);
+        Describe(buf, slots, s, mode);
     }
-    else
+    Record* r = RecordOf(buf, now);
+    const float tFactor = mode == 0 ? 1.f : s;
+    for (uint32_t i = 0; i < slots; ++i)
     {
-        float* sc = LocalS(buf, 0);
-        sc[0] = s; sc[1] = s; sc[2] = s;
+        Put(LocalT(buf, i), r->base[i], r->wrote[i], tFactor);
+        // scale: the Root alone carries it, unless nothing is inherited (mode 1)
+        Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, (mode == 1 || i == 0) ? s : 1.f);
     }
+    ReleaseSRWLockExclusive(&g_recordLock);
 }
 
 void ApplyInner(void* a2)
@@ -137,8 +164,10 @@ void ApplyInner(void* a2)
     for (const auto& p : g_people)
     {
         if (!p.on || (trackBuf != p.trackA && trackBuf != p.trackB)) continue;
-        if (now - p.asked > kStaleMs) continue;
-        Write(boneBuf, slots, p);
+        // let go (asked to, or not asked about any more): the bones are put back for a while, then left alone
+        const bool leaving = p.leaving || now - p.asked > kStaleMs;
+        if (leaving && now - (p.leaving ? p.leftAt : p.asked + kStaleMs) > kRestoreMs) continue;
+        Write(boneBuf, slots, leaving ? 1.f : p.scale, p.mode, now);
         return;
     }
 }
@@ -469,12 +498,18 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
     Scaled* free = nullptr;
     for (auto& p : g_people)
     {
+        // done with: let go and put back, or not asked about for long enough that the hook has stopped touching them
+        if (p.on && (p.leaving ? now - p.leftAt > kRestoreMs : now - p.asked > kStaleMs + kRestoreMs)) p.on = false;
         if (p.on && p.entity == key) slot = &p;
-        else if (!free && (!p.on || now - p.asked > kStaleMs)) free = &p;
+        else if (!free && !p.on) free = &p;
     }
     if (release)
     {
-        if (slot) slot->on = false;
+        if (slot && !slot->leaving)
+        {
+            slot->leaving = true;
+            slot->leftAt = now;
+        }
         answer = true;
     }
     else if (found)
@@ -482,7 +517,8 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (!slot) slot = free;
         if (slot)
         {
-            fresh = !slot->on || slot->entity != key;
+            fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode == 1 || mode == 2) ? mode : 0);
+            slot->leaving = false;
             slot->on = true;
             slot->entity = key;
             slot->trackA = a;
@@ -498,6 +534,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (p.on) any = 1;
     InterlockedExchange(&g_anyOn, any);
     ReleaseSRWLockExclusive(&g_lock);
+    if (fresh) InterlockedExchange(&g_dump, 6);
     if (fresh && g_sdk)
         g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
                              scale, (mode == 1 || mode == 2) ? mode : 0, g_systemHow, search.names);
