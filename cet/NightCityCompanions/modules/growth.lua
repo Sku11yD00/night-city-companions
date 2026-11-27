@@ -33,12 +33,12 @@ G.lookUp = lookUp
 
 local function send(f, scale)
   if not lookUp() or not R.alive(f) then return false end
-  local ok, yes = pcall(scaleNative, f.entity, scale, C.v.scaleMode or 0)
+  local ok, yes = pcall(scaleNative, f.entity, scale, C.v.scaleMethod or 2)
   -- one line each time the answer changes, so trace.log shows whether the plugin found the person
   local answer = ok and (yes and 'yes' or 'no') or ('error ' .. tostring(yes))
   if f.lastScaleAnswer ~= answer then
     f.lastScaleAnswer = answer
-    U.trace('size %s: %.2f (mode %d), plugin answered %s', f.name, scale, C.v.scaleMode or 0, answer)
+    U.trace('size %s: %.2f (mode %d), plugin answered %s', f.name, scale, C.v.scaleMethod or 2, answer)
   end
   return ok and yes
 end
@@ -70,7 +70,8 @@ function G.update(dt)
     if C.v.gradualGrowth and R.alive(f) then
       f.targetScale = math.min(C.v.maxScale, (f.targetScale or 1) + C.v.gradualPerMinute * dt / 60)
     end
-    local target = f.targetScale or 1
+    local target = U.clamp(f.targetScale or 1, C.v.minScale, C.v.maxScale)
+    f.targetScale = target
     local now = f.scale or 1
     local moving = math.abs(target - now) > 1e-3
     if moving then

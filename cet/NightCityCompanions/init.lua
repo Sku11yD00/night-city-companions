@@ -237,10 +237,12 @@ local function sizeTab(f)
   end
   v, c = ImGui.SliderFloat('Largest size', C.v.maxScale, 1.0, 50.0, '%.1fx') if c then C.v.maxScale = v C.save() end
   ImGui.Separator()
-  ImGui.TextWrapped('Scaling method: if the body looks stretched or the hands fly off, try the other one.')
-  if ImGui.RadioButton('Root bone (default)', C.v.scaleMode == 0) then C.v.scaleMode = 0 C.save() end
+  ImGui.TextWrapped('Scaling method: if the body looks swollen, stretched or crumpled, try another one.')
+  if ImGui.RadioButton('Whole body (default)', C.v.scaleMethod == 2) then C.v.scaleMethod = 2 C.save() end
   ImGui.SameLine()
-  if ImGui.RadioButton('Every bone', C.v.scaleMode == 1) then C.v.scaleMode = 1 C.save() end
+  if ImGui.RadioButton('Root bone only', C.v.scaleMethod == 0) then C.v.scaleMethod = 0 C.save() end
+  ImGui.SameLine()
+  if ImGui.RadioButton('Every bone', C.v.scaleMethod == 1) then C.v.scaleMethod = 1 C.save() end
 end
 
 local function rideTab(f)

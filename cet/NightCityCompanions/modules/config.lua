@@ -22,7 +22,7 @@ C.defaults = {
   speakReplies = false,        -- the bridge reads replies aloud (needs --voice on the bridge)
   subtitleSeconds = 8,
   -- growth
-  scaleMode = 0,               -- 0 Root bone, 1 every bone (see red4ext/CompanionScale); pick whichever looks right
+  scaleMethod = 2,             -- 2 whole body, 0 Root bone only, 1 every bone (see red4ext/CompanionScale)
   growSpeed = 0.5,             -- scale units per second when changing size
   gradualGrowth = false,       -- followers keep growing slowly on their own
   gradualPerMinute = 0.05,

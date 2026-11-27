@@ -14,8 +14,12 @@
 //   CompanionScale(entity: ref<IScriptable>, scale: Float, mode: Int32) -> Bool
 //     Draws the person at `scale` (0.05 to 50). Ask again at least every 2.5 s to keep it (the Lua mod asks twice a
 //     second); a person not asked about for longer is let go, so a despawned person's reused buffers are never touched.
-//     scale 1 lets them go at once. mode 0 writes the Root bone's scale; mode 1 every bone's translation and scale
-//     (for an engine that does not carry a parent's scale down the chain -- which one is right is picked by eye).
+//     scale 1 lets them go at once. Which mode is right depends on how the engine carries a parent's scale down the
+//     bone chain, and is picked by eye:
+//       mode 2  the Root's scale and every bone's translation (scale is inherited, but does not stretch the offsets
+//               between joints -- what the game does, as far as testing shows; the Lua mod's default)
+//       mode 0  the Root's scale only (scale and offsets both inherited; in game this swells each body part in place)
+//       mode 1  every bone's translation and scale (nothing inherited)
 //
 // Not scaled: the collision capsule, the navigation agent, the ragdoll and the culling bounds.
 #include <RED4ext/RED4ext.hpp>
@@ -63,7 +67,7 @@ inline float* LocalT(uint8_t* buf, uint32_t i) { return reinterpret_cast<float*>
 inline float* LocalS(uint8_t* buf, uint32_t i) { return reinterpret_cast<float*>(buf + i * kBoneStride + kScaleOff); }
 
 // The engine can hand the same buffer to the hook twice, so a write must not land on top of itself. Mode 0 sets the
-// Root's scale outright (the same however often it runs). Mode 1 multiplies, so the last few buffers it wrote are
+// Root's scale outright (the same however often it runs). Modes 1 and 2 multiply, so the last few buffers it wrote are
 // remembered with what one bone was left at; a buffer that still has that is already done.
 struct Done { uint8_t* buf; float t[3]; };
 Done g_done[16]{};
@@ -99,6 +103,18 @@ void Write(uint8_t* buf, uint32_t slots, const Scaled& p)
             t[0] *= s; t[1] *= s; t[2] *= s;
             sc[0] *= s; sc[1] *= s; sc[2] *= s;
         }
+        NoteDone(buf, slots);
+    }
+    else if (p.mode == 2)
+    {
+        if (AlreadyDone(buf, slots)) return;
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            float* t = LocalT(buf, i);
+            t[0] *= s; t[1] *= s; t[2] *= s;
+        }
+        float* sc = LocalS(buf, 0);
+        sc[0] = s; sc[1] = s; sc[2] = s;
         NoteDone(buf, slots);
     }
     else
@@ -472,7 +488,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
             slot->trackA = a;
             slot->trackB = b;
             slot->scale = scale;
-            slot->mode = mode == 1 ? 1 : 0;
+            slot->mode = (mode == 1 || mode == 2) ? mode : 0;
             slot->asked = now;
             answer = true;
         }
@@ -484,7 +500,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
     ReleaseSRWLockExclusive(&g_lock);
     if (fresh && g_sdk)
         g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
-                             scale, mode == 1 ? 1 : 0, g_systemHow, search.names);
+                             scale, (mode == 1 || mode == 2) ? mode : 0, g_systemHow, search.names);
     return answer;
 }
 
