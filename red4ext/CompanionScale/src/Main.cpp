@@ -99,16 +99,31 @@ struct Record
     uint64_t used;
     float base[kMostBones][6];          // translation xyz, scale xyz
     float wrote[kMostBones][6];
-    uint32_t pass;                      // which pass of this frame this is, counted from the animation's own
-    uint32_t passes;                    // how many passes the last whole frame had
-    bool counted;                       // this frame began with the animation's pose, so its passes can be counted
-    float watched[7];                   // the Hips' offset and rotation as they were left on the last pass
+    // the passes of a frame, told apart by the caller (the hooked call's first argument), which is the same object
+    // for the same pass in every frame
+    void* anim;                         // the caller that opens a frame with the animation's pose
+    void* cand;                         // ... and the one that looks like it, until it has done so three times
+    uint32_t candHits;
+    void* last;                         // this frame's latest caller
+    void* predLast;                     // the caller that closed the frame before
+    void* longLast;                     // the caller that closed the longest frame seen lately
+    uint32_t longN, longAge;
+    uint32_t pass;                      // which pass of this frame this is
+    uint32_t passes;                    // how many passes the frame before had
+    bool scaledNow;                     // the pose was left scaled by an earlier pass of this frame
+    bool wanted;                        // this frame was meant to end scaled
+    int64_t at;                         // when the latest pass came
+    void* shapeLast;                    // for the log: frames of one shape in a row
+    uint32_t shapeN, shapeRun;
+    uint32_t cleanSlots;                // the whole pose at real size, as it was just before it was last scaled
+    uint8_t clean[kMostBones * kBoneStride];
 };
 Record g_records[kRecords]{};
-thread_local void* t_a1 = nullptr;      // the hooked call's other arguments, for the log
+thread_local void* t_a1 = nullptr;      // the hooked call's other arguments
 thread_local void* t_a3 = nullptr;
 thread_local unsigned t_a4 = 0;
-volatile LONG g_oddFrames = 0;          // frames that had another number of passes than the one before
+volatile LONG g_shapeLines = 0, g_missed = 0, g_repaired = 0;
+int64_t g_ticksPerMs = 0;
 SRWLOCK g_recordLock = SRWLOCK_INIT;
 volatile LONG g_dump = 0;               // how many more passes to describe in the log
 
@@ -122,6 +137,11 @@ Record* RecordOf(uint8_t* buf, uint64_t now)
     }
     oldest->buf = buf;
     oldest->used = now;
+    oldest->anim = oldest->cand = oldest->last = oldest->predLast = oldest->longLast = oldest->shapeLast = nullptr;
+    oldest->candHits = oldest->longN = oldest->longAge = oldest->pass = oldest->passes = 0;
+    oldest->shapeN = oldest->shapeRun = oldest->cleanSlots = 0;
+    oldest->scaledNow = oldest->wanted = false;
+    oldest->at = 0;
     // nothing written yet: NaN never compares equal, so every bone is taken as the engine's own
     for (auto& w : oldest->wrote)
         for (float& x : w) x = NAN;
@@ -196,10 +216,11 @@ void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, floa
         }
     }
     g_sdk->logger->InfoF(g_handle,
-                         "survey: scale %.2f mode %d when %d, %s pass %u (last frame had %u), call %p %p %u; the engine "
+                         "survey: scale %.2f mode %d when %d, %s pass %u (last frame had %u)%s, call %p %p %u; the engine "
                          "rewrote %u offsets and %u scales; %u bones carry a scale of the engine's own, %u are not "
                          "numbers or huge",
-                         s, mode, p.when, fresh ? "animation" : "later", r->pass, r->passes, t_a1, t_a3, t_a4, movedT,
+                         s, mode, p.when, fresh ? "animation" : "later", r->pass, r->passes,
+                         r->scaledNow ? ", on a pose left scaled" : "", t_a1, t_a3, t_a4, movedT,
                          movedS, odd, bad);
     for (int k = 0; k < 4; ++k)
     {
@@ -222,85 +243,140 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         Describe(buf, slots, s, mode);
     }
     Record* r = RecordOf(buf, now);
-    // THE PASSES OF A FRAME. The hook sees a person's buffer several times a frame. The first time it holds the
-    // animation's fresh pose; between the later times the engine runs its own corrections (look-at, muscles, helper
-    // joints -- some 250 bones), and those do not understand a scaled parent: they put their bones back in the wrong
-    // place and the body tears. So the corrections must see the person at their real size. `when` says which passes
-    // carry the scale: 0 all of them (the tearing), 1 all but the animation's, 2 the last pass of the frame only (as
-    // many passes as the frame before had). On the other passes every bone is put back.
+    // THE PASSES OF A FRAME. The hook sees a person's buffer several times a frame, each time from another caller.
+    // The first holds the animation's fresh pose; before each later one the engine runs corrections of its own
+    // (look-at, muscles, helper joints -- some 250 bones), and those do not understand a scaled parent: they put their
+    // bones back in the wrong place and the body tears. So the corrections must see the person at their real size,
+    // and only the frame's last pass may leave the scale in. Which pass is last is not known ahead (frames of two and
+    // of four passes both happen), so it is taken to be the caller that closed the frame before, or the one that
+    // closes the longest frames. When that guess is early and another pass comes, what the engine made of the scaled
+    // pose is thrown away: the pose is put back as it was at real size just before the scale went in.
+    // `when` says which passes carry the scale: 0 all of them (the tearing), 1 all but the animation's, 2 the last.
+    void* const caller = t_a1;
+    LARGE_INTEGER qpc;
+    if (!g_ticksPerMs)
     {
-        const uint32_t watch = (p.bones == slots && p.hips >= 0) ? static_cast<uint32_t>(p.hips) : (slots > 2 ? 2u : 0u);
-        // A new frame shows in the Hips: the animation gives them a new offset or rotation, and nothing between the
-        // passes touches them. A pose that stands perfectly still gives no such sign, so a frame also ends when it
-        // has had as many passes as the last counted one.
-        const float* w = reinterpret_cast<const float*>(buf + watch * kBoneStride);
-        bool fresh = false;
-        for (int k = 0; k < 3; ++k) fresh = fresh || w[k] != r->wrote[watch][k];
-        for (int k = 0; k < 4; ++k) fresh = fresh || w[4 + k] != r->watched[3 + k];
-        if (fresh)
-        {
-            if (r->counted && r->pass)
-            {
-                if (r->passes && r->passes != r->pass)
-                {
-                    const LONG n = InterlockedIncrement(&g_oddFrames);
-                    if (g_sdk && (n <= 30 || n % 500 == 0))
-                        g_sdk->logger->InfoF(g_handle, "odd frame %d: %u passes where the one before had %u", n,
-                                             r->pass, r->passes);
-                }
-                r->passes = r->pass;
-            }
-            r->pass = 1;
-            r->counted = true;
-        }
-        else if (r->passes && r->pass >= r->passes)
-        {
-            r->pass = 1;
-            r->counted = false;
-        }
-        else
-            ++r->pass;
-        if (g_surveyLeft > 0)
-        {
-            InterlockedDecrement(&g_surveyLeft);
-            Survey(buf, slots, r, p, s, mode, fresh);
-        }
-        else if (now >= g_surveyNext && now < g_surveyUntil)
-        {
-            g_surveyNext = now + 2500;
-            InterlockedExchange(&g_surveyLeft, r->passes > 1 ? r->passes : 1);
-            Survey(buf, slots, r, p, s, mode, fresh);
-        }
-        if (p.when == 1 && fresh) s = 1.f;
-        if (p.when == 2 && r->pass < r->passes) s = 1.f;
-        if (p.when == 2 && r->passes == 0) s = 1.f;
+        QueryPerformanceFrequency(&qpc);
+        g_ticksPerMs = qpc.QuadPart / 1000;
     }
+    QueryPerformanceCounter(&qpc);
+    const bool gap = !r->at || (g_ticksPerMs && qpc.QuadPart - r->at > g_ticksPerMs);
+    r->at = qpc.QuadPart;
+    if (gap)
+    {
+        // the passes of a frame come back to back, so the one after a pause opens a frame
+        if (caller == r->cand) { if (r->candHits < 1000) ++r->candHits; }
+        else { r->cand = caller; r->candHits = 1; }
+        if (r->candHits >= 3 && r->anim != caller)
+        {
+            r->anim = caller;
+            if (g_sdk) g_sdk->logger->InfoF(g_handle, "pose %p: frames open with caller %p", buf, caller);
+        }
+    }
+    const bool start = r->anim ? caller == r->anim : gap;
+    if (start)
+    {
+        if (r->pass)
+        {
+            if (r->wanted && !r->scaledNow)
+            {
+                const LONG n = InterlockedIncrement(&g_missed);
+                if (g_sdk && (n <= 40 || n % 200 == 0))
+                    g_sdk->logger->InfoF(g_handle, "missed frame %d: %u passes ending with %p, expected %p or %p", n,
+                                         r->pass, r->last, r->predLast, r->longLast);
+            }
+            if (r->pass > r->longN || r->longAge > 600) { r->longN = r->pass; r->longLast = r->last; r->longAge = 0; }
+            else if (r->pass == r->longN) { r->longLast = r->last; r->longAge = 0; }
+            else ++r->longAge;
+            r->predLast = r->last;
+            r->passes = r->pass;
+            if (r->pass == r->shapeN && r->last == r->shapeLast) ++r->shapeRun;
+            else
+            {
+                if (r->shapeRun)
+                {
+                    const LONG n = InterlockedIncrement(&g_shapeLines);
+                    if (g_sdk && (n <= 300 || n % 50 == 0))
+                        g_sdk->logger->InfoF(g_handle, "frames of pose %p: %u in a row with %u passes, ending with %p", buf,
+                                             r->shapeRun, r->shapeN, r->shapeLast);
+                }
+                r->shapeN = r->pass;
+                r->shapeLast = r->last;
+                r->shapeRun = 1;
+            }
+        }
+        r->pass = 0;
+        r->scaledNow = false;
+        r->wanted = false;
+    }
+    ++r->pass;
+    r->last = caller;
+    if (g_surveyLeft > 0)
+    {
+        InterlockedDecrement(&g_surveyLeft);
+        Survey(buf, slots, r, p, s, mode, start);
+    }
+    else if (now >= g_surveyNext && now < g_surveyUntil)
+    {
+        g_surveyNext = now + 2500;
+        InterlockedExchange(&g_surveyLeft, r->passes > 1 ? r->passes : 1);
+        Survey(buf, slots, r, p, s, mode, start);
+    }
+    bool scaleNow;
+    if (p.when == 0) scaleNow = true;
+    else if (p.when == 1) scaleNow = !start;
+    else
+    {
+        if (r->scaledNow && r->cleanSlots == slots)
+        {
+            // an earlier pass of this frame was taken for the last: undo what the engine made of the scaled pose
+            memcpy(buf, r->clean, static_cast<size_t>(slots) * kBoneStride);
+            r->scaledNow = false;
+            const LONG n = InterlockedIncrement(&g_repaired);
+            if (g_sdk && (n <= 40 || n % 200 == 0))
+                g_sdk->logger->InfoF(g_handle, "repaired frame %d: pass %u from %p came after the scale went in", n,
+                                     r->pass, caller);
+        }
+        scaleNow = r->anim && r->passes && (caller == r->predLast || caller == r->longLast);
+        if (s != 1.f) r->wanted = r->anim && r->passes;
+    }
+    if (s == 1.f) scaleNow = false;
     const bool known = p.bones == slots;   // the rig read for this person describes this buffer
     const int hips = known ? p.hips : -1;
     if ((mode == 6 || mode == 7) && hips < 0) mode = 2;
+    // first everything back to real size, taking in what the engine wrote since
     for (uint32_t i = 0; i < slots; ++i)
     {
-        const int me = static_cast<int>(i);
-        const bool belowHips = known && p.parents[i] == hips;
-        bool moved, scaled;
-        switch (mode)
-        {
-        case 1: moved = true; scaled = true; break;
-        case 2: moved = true; scaled = i == 0; break;
-        case 3: moved = false; scaled = true; break;
-        case 4: moved = true; scaled = known ? p.parents[i] < 0 : i == 0; break;
-        case 5: moved = false; scaled = known && p.names[i] == g_testBone; break;
-        case 6: moved = me == hips; scaled = me == hips; break;
-        case 7: moved = me == hips || belowHips; scaled = belowHips; break;
-        default: moved = false; scaled = i == 0; break;
-        }
-        Put(LocalT(buf, i), r->base[i], r->wrote[i], moved ? s : 1.f);
-        Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, scaled ? s : 1.f);
+        Put(LocalT(buf, i), r->base[i], r->wrote[i], 1.f);
+        Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, 1.f);
     }
+    if (scaleNow)
     {
-        const uint32_t watch = (known && hips >= 0) ? static_cast<uint32_t>(hips) : (slots > 2 ? 2u : 0u);
-        const float* w = reinterpret_cast<const float*>(buf + watch * kBoneStride);
-        for (int k = 0; k < 4; ++k) r->watched[3 + k] = w[4 + k];
+        if (p.when == 2)
+        {
+            memcpy(r->clean, buf, static_cast<size_t>(slots) * kBoneStride);
+            r->cleanSlots = slots;
+            r->scaledNow = true;
+        }
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            const int me = static_cast<int>(i);
+            const bool belowHips = known && p.parents[i] == hips;
+            bool moved, scaled;
+            switch (mode)
+            {
+            case 1: moved = true; scaled = true; break;
+            case 2: moved = true; scaled = i == 0; break;
+            case 3: moved = false; scaled = true; break;
+            case 4: moved = true; scaled = known ? p.parents[i] < 0 : i == 0; break;
+            case 5: moved = false; scaled = known && p.names[i] == g_testBone; break;
+            case 6: moved = me == hips; scaled = me == hips; break;
+            case 7: moved = me == hips || belowHips; scaled = belowHips; break;
+            default: moved = false; scaled = i == 0; break;
+            }
+            if (moved) Put(LocalT(buf, i), r->base[i], r->wrote[i], s);
+            if (scaled) Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, s);
+        }
     }
     ReleaseSRWLockExclusive(&g_recordLock);
 }

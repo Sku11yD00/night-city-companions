@@ -80,9 +80,15 @@ local function setPace(f, scale)
       end)
     end
   end
-  if f.paceAnswer ~= ok then
+  -- what the game says it took, written down whenever the answer or the pace has changed enough to matter
+  if f.paceAnswer ~= ok or math.abs((f.paceLogged or 1) - want) >= 0.05 then
     f.paceAnswer = ok
-    U.trace('pace %s: %.2f %s', f.name, want, ok and 'set' or ('FAILED ' .. tostring(err)))
+    f.paceLogged = want
+    local has, value = '?', '?'
+    pcall(function() has = tostring(f.entity:HasIndividualTimeDilation(reason)) end)
+    pcall(function() value = string.format('%.2f', f.entity:GetTimeDilationValue()) end)
+    U.trace('pace %s: %.2f at size %.2f %s (the game says: has it %s, runs at %s)', f.name, want, scale,
+      ok and 'set' or ('FAILED ' .. tostring(err)), has, value)
   end
   f.pace = want
 end
