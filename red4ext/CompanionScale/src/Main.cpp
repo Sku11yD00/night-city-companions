@@ -566,8 +566,8 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
         {
             out.parents[i] = rig->parentIndeces[i];
             out.names[i] = rig->boneNames[i].hash;
-            out.text[i] = name ? name : "?";
             const char* name = rig->boneNames[i].ToString();
+            out.text[i] = name ? name : "?";
             if (name && out.head < 0 && std::strcmp(name, "Head") == 0) out.head = static_cast<int>(i);
             if (name && out.hips < 0 && std::strcmp(name, "Hips") == 0) out.hips = static_cast<int>(i);
             if (log)
