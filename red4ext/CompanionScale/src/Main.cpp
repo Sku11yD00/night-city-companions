@@ -23,6 +23,10 @@
 //       mode 3  every bone's scale (a bone's scale stretches its children's offsets but is not passed on)
 //       mode 4  as mode 2, with the scale on every bone the rig gives no parent (a rig can have several roots)
 //       mode 5  a test: the Head bone's scale alone, to see how the game scales one part
+//       mode 6  the Hips: their scale, and their height above the ground. In game a scaled bone carries everything
+//               below it correctly (the Head test), but the Root's own scale tears the body; the whole body hangs
+//               from the Hips, so this is the Lua mod's default
+//       mode 7  as mode 6 one step down: the bones attached to the Hips carry the scale
 //
 // Not scaled: the collision capsule, the navigation agent, the ragdoll and the culling bounds.
 #include <RED4ext/RED4ext.hpp>
@@ -66,7 +70,7 @@ struct Scaled
     bool leaving;                       // asked to be let go: the bones are being put back
     uint64_t leftAt;
     uint32_t bones;                     // what the person's rig says: how many bones, each one's parent, the Head
-    int head;
+    int head, hips;
     int16_t parents[kMostBones];
 };
 Scaled g_people[kMost]{};
@@ -147,17 +151,26 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         Describe(buf, slots, s, mode);
     }
     Record* r = RecordOf(buf, now);
-    const float tFactor = (mode == 0 || mode == 3 || mode == 5) ? 1.f : s;
     const bool known = p.bones == slots;   // the rig read for this person describes this buffer
+    const int hips = known ? p.hips : -1;
+    if ((mode == 6 || mode == 7) && hips < 0) mode = 2;
     for (uint32_t i = 0; i < slots; ++i)
     {
-        Put(LocalT(buf, i), r->base[i], r->wrote[i], tFactor);
-        // scale: the Root alone carries it, unless nothing is inherited (mode 1)
-        bool scaled;
-        if (mode == 1 || mode == 3) scaled = true;
-        else if (mode == 5) scaled = known && static_cast<int>(i) == p.head;
-        else if (mode == 4 && known) scaled = p.parents[i] < 0;      // every bone that has no parent
-        else scaled = i == 0;
+        const int me = static_cast<int>(i);
+        const bool belowHips = known && p.parents[i] == hips;
+        bool moved, scaled;
+        switch (mode)
+        {
+        case 1: moved = true; scaled = true; break;
+        case 2: moved = true; scaled = i == 0; break;
+        case 3: moved = false; scaled = true; break;
+        case 4: moved = true; scaled = known ? p.parents[i] < 0 : i == 0; break;
+        case 5: moved = false; scaled = known && me == p.head; break;
+        case 6: moved = me == hips; scaled = me == hips; break;
+        case 7: moved = me == hips || belowHips; scaled = belowHips; break;
+        default: moved = false; scaled = i == 0; break;
+        }
+        Put(LocalT(buf, i), r->base[i], r->wrote[i], moved ? s : 1.f);
         Put(LocalS(buf, i), r->base[i] + 3, r->wrote[i] + 3, scaled ? s : 1.f);
     }
     ReleaseSRWLockExclusive(&g_recordLock);
@@ -468,6 +481,7 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
     static uintptr_t s_logged = 0;
     out.bones = 0;
     out.head = -1;
+    out.hips = -1;
     __try
     {
         auto* rig = object->metaRig;
@@ -482,6 +496,7 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
             out.parents[i] = rig->parentIndeces[i];
             const char* name = rig->boneNames[i].ToString();
             if (name && out.head < 0 && std::strcmp(name, "Head") == 0) out.head = static_cast<int>(i);
+            if (name && out.hips < 0 && std::strcmp(name, "Hips") == 0) out.hips = static_cast<int>(i);
             if (log)
             {
                 const float* f = rest ? reinterpret_cast<const float*>(&rig->boneTransforms[i]) : nullptr;
@@ -570,7 +585,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (!slot) slot = free;
         if (slot)
         {
-            fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode >= 1 && mode <= 5) ? mode : 0);
+            fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode >= 1 && mode <= 7) ? mode : 0);
             slot->leaving = false;
             if (fresh || slot->bones == 0) ReadRig(object, *slot);
             slot->on = true;
@@ -578,7 +593,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
             slot->trackA = a;
             slot->trackB = b;
             slot->scale = scale;
-            slot->mode = (mode >= 1 && mode <= 5) ? mode : 0;
+            slot->mode = (mode >= 1 && mode <= 7) ? mode : 0;
             slot->asked = now;
             answer = true;
         }
@@ -591,7 +606,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
     if (fresh) InterlockedExchange(&g_dump, 6);
     if (fresh && g_sdk)
         g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
-                             scale, (mode >= 1 && mode <= 5) ? mode : 0, g_systemHow, search.names);
+                             scale, (mode >= 1 && mode <= 7) ? mode : 0, g_systemHow, search.names);
     return answer;
 }
 

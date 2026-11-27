@@ -237,17 +237,13 @@ local function sizeTab(f)
   end
   v, c = ImGui.SliderFloat('Largest size', C.v.maxScale, 1.0, 50.0, '%.1fx') if c then C.v.maxScale = v C.save() end
   ImGui.Separator()
-  ImGui.TextWrapped('Scaling method: if the body looks swollen, stretched or crumpled, try another one.')
-  if ImGui.RadioButton('Whole body (default)', C.v.scaleMethod == 2) then C.v.scaleMethod = 2 C.save() end
-  ImGui.SameLine()
-  if ImGui.RadioButton('Root bone only', C.v.scaleMethod == 0) then C.v.scaleMethod = 0 C.save() end
-  ImGui.SameLine()
-  if ImGui.RadioButton('Every bone', C.v.scaleMethod == 1) then C.v.scaleMethod = 1 C.save() end
-  ImGui.SameLine()
-  if ImGui.RadioButton('Every bone, size only', C.v.scaleMethod == 3) then C.v.scaleMethod = 3 C.save() end
-  if ImGui.RadioButton('By skeleton', C.v.scaleMethod == 4) then C.v.scaleMethod = 4 C.save() end
-  ImGui.SameLine()
-  if ImGui.RadioButton('Test: head only', C.v.scaleMethod == 5) then C.v.scaleMethod = 5 C.save() end
+  ImGui.TextWrapped('Scaling method: if the body looks wrong, try another one.')
+  local methods = { { 6, 'From the hips (default)' }, { 7, 'Below the hips' }, { 5, 'Test: head only' },
+    { 2, 'Whole body' }, { 0, 'Root bone only' } }
+  for i, m in ipairs(methods) do
+    if ImGui.RadioButton(m[2], C.v.scaleFrom == m[1]) then C.v.scaleFrom = m[1] C.save() end
+    if i % 3 ~= 0 and i < #methods then ImGui.SameLine() end
+  end
 end
 
 local function rideTab(f)
