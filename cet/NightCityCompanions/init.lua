@@ -110,6 +110,7 @@ registerForEvent('onInit', function()
   end)
   Chat.setListening(false)
   pcall(G.lookUp)
+  U.trace('growth plugin %s', G.available and 'found' or 'NOT found')
   U.say('loaded: %d followers on the roster; growth %s', #R.list,
     G.available and 'available' or 'NOT available (install the CompanionScale plugin)')
 end)
