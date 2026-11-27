@@ -135,8 +135,12 @@ end
 
 -- A native global function from a RED4ext plugin, if it is installed (nil otherwise).
 function U.native(name)
-  local f = rawget(_G, name)
-  if type(f) == 'function' then return f end
+  -- CET hands out the game's global functions through the globals' lookup, not as plain table entries, so this is a
+  -- normal (not raw) global lookup
+  local ok0, f = pcall(function() return _G[name] end)
+  if ok0 and f ~= nil and (type(f) == 'function' or type(f) == 'userdata' or type(f) == 'table') then
+    return function(...) return _G[name](...) end
+  end
   local ok, g = pcall(function() return Game[name] end)
   if ok and type(g) == 'function' then
     return function(...) return Game[name](...) end

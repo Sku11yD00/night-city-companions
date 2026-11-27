@@ -23,7 +23,7 @@ local function lookUp()
   G.available = scaleNative ~= nil
   if scaleNative or looks <= 3 then
     local kind = 'none'
-    pcall(function() kind = type(rawget(_G, 'CompanionScale')) .. ' / Game: ' .. type(Game['CompanionScale']) end)
+    pcall(function() kind = 'raw ' .. type(rawget(_G, 'CompanionScale')) .. ' / global ' .. type(_G['CompanionScale']) .. ' / Game: ' .. type(Game['CompanionScale']) end)
     U.trace('growth plugin %s (look %d; global %s)', scaleNative and 'found' or 'NOT found', looks, kind)
   end
   return scaleNative
