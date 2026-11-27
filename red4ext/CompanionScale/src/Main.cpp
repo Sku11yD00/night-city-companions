@@ -71,6 +71,8 @@ struct Scaled
     uint64_t leftAt;
     uint32_t bones;                     // what the person's rig says: how many bones, each one's parent, the Head
     int head, hips;
+    bool boxKnown;                      // the animated object's own bounds, as the engine had them
+    float box[8];
     int16_t parents[kMostBones];
 };
 Scaled g_people[kMost]{};
@@ -513,6 +515,36 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
     }
 }
 
+// The animated object's bounds, grown with the person. A body drawn outside them is what tears: the Head alone, which
+// stays inside, scales cleanly. `log` writes what was found and what was put there.
+void GrowBounds(RED4ext::anim::AnimatedObject* object, Scaled& p, float s, bool log)
+{
+    __try
+    {
+        float* box = reinterpret_cast<float*>(&object->objectBounds);
+        if (!p.boxKnown)
+        {
+            std::memcpy(p.box, box, sizeof(p.box));
+            p.boxKnown = true;
+        }
+        if (log && g_sdk)
+            g_sdk->logger->InfoF(g_handle,
+                                 "bounds now %.2f %.2f %.2f .. %.2f %.2f %.2f, the engine's %.2f %.2f %.2f .. %.2f %.2f "
+                                 "%.2f, growing by %.2f",
+                                 box[0], box[1], box[2], box[4], box[5], box[6], p.box[0], p.box[1], p.box[2],
+                                 p.box[4], p.box[5], p.box[6], s);
+        const float f = s > 1.f ? s : 1.f;
+        for (int k = 0; k < 3; ++k)
+        {
+            box[k] = p.box[k] * f;
+            box[4 + k] = p.box[4 + k] * f;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
 bool TracksOf(RED4ext::ent::Entity* entity, uintptr_t& a, uintptr_t& b, Search& s,
               RED4ext::anim::AnimatedObject*& found)
 {
@@ -588,6 +620,8 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
             fresh = !slot->on || slot->entity != key || slot->leaving || slot->mode != ((mode >= 1 && mode <= 7) ? mode : 0);
             slot->leaving = false;
             if (fresh || slot->bones == 0) ReadRig(object, *slot);
+            if (slot->entity != key || !slot->on) slot->boxKnown = false;
+            GrowBounds(object, *slot, scale, fresh);
             slot->on = true;
             slot->entity = key;
             slot->trackA = a;
