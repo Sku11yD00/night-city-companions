@@ -75,6 +75,7 @@ struct Scaled
     float box[8];
     int16_t parents[kMostBones];
     uint64_t names[kMostBones];
+    const char* text[kMostBones];       // the names as text (the engine's name pool keeps them)
 };
 Scaled g_people[kMost]{};
 volatile uint64_t g_testBone = RED4ext::CName("Head").hash;   // the one bone mode 5 scales
@@ -145,6 +146,61 @@ void Describe(uint8_t* buf, uint32_t slots, float s, int mode)
     }
 }
 
+// A look at what the engine itself has put in the pose since the last write, for the log: how many bones it rewrote,
+// which bones it gave a scale of its own, and which sit farthest from their parent. Run for the first passes after a
+// change and then every few seconds for a while, so a bone that runs away shows up with its name.
+volatile LONG g_surveyLeft = 0;
+uint64_t g_surveyNext = 0, g_surveyUntil = 0;
+
+void Survey(uint8_t* buf, uint32_t slots, const Record* r, const Scaled& p, float s, int mode)
+{
+    if (!g_sdk) return;
+    const bool known = p.bones == slots;
+    uint32_t movedT = 0, movedS = 0, odd = 0, bad = 0;
+    int far[4] = {-1, -1, -1, -1};
+    float farLen[4] = {0, 0, 0, 0};
+    for (uint32_t i = 0; i < slots; ++i)
+    {
+        const float* t = LocalT(buf, i);
+        const float* sc = LocalS(buf, i);
+        const bool ownT = t[0] == r->wrote[i][0] && t[1] == r->wrote[i][1] && t[2] == r->wrote[i][2];
+        const bool ownS = sc[0] == r->wrote[i][3] && sc[1] == r->wrote[i][4] && sc[2] == r->wrote[i][5];
+        if (!ownT) ++movedT;
+        if (!ownS) ++movedS;
+        const float len = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
+        if (!(len == len) || !(sc[0] == sc[0]) || len > 1e12f) ++bad;
+        // the engine's own scale: what is there now if the engine wrote it, else what it had before this plugin did
+        const float* own = ownS ? r->base[i] + 3 : sc;
+        const bool scaledByEngine = own[0] < .99f || own[0] > 1.01f || own[1] < .99f || own[1] > 1.01f ||
+                                    own[2] < .99f || own[2] > 1.01f;
+        if (scaledByEngine && odd++ < 14)
+            g_sdk->logger->InfoF(g_handle, "  engine scale on %u %s (parent %d): %.3f %.3f %.3f, T %.3f %.3f %.3f", i,
+                                 known ? p.text[i] : "?", known ? static_cast<int>(p.parents[i]) : -2, own[0], own[1],
+                                 own[2], t[0], t[1], t[2]);
+        for (int k = 0; k < 4; ++k)
+        {
+            if (len <= farLen[k]) continue;
+            for (int j = 3; j > k; --j) { far[j] = far[j - 1]; farLen[j] = farLen[j - 1]; }
+            far[k] = static_cast<int>(i);
+            farLen[k] = len;
+            break;
+        }
+    }
+    g_sdk->logger->InfoF(g_handle,
+                         "survey: scale %.2f mode %d, %u bones; the engine rewrote %u offsets and %u scales; %u bones "
+                         "carry a scale of the engine's own, %u are not numbers or huge",
+                         s, mode, slots, movedT, movedS, odd, bad);
+    for (int k = 0; k < 4; ++k)
+    {
+        if (far[k] < 0) continue;
+        const float* t = LocalT(buf, far[k]);
+        const float* sc = LocalS(buf, far[k]);
+        g_sdk->logger->InfoF(g_handle, "  farthest %d %s (parent %d): T %.3f %.3f %.3f S %.3f %.3f %.3f", far[k],
+                             known ? p.text[far[k]] : "?", known ? static_cast<int>(p.parents[far[k]]) : -2, t[0],
+                             t[1], t[2], sc[0], sc[1], sc[2]);
+    }
+}
+
 // s is 1 for a person being let go.
 void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const Scaled& p)
 {
@@ -155,6 +211,17 @@ void Write(uint8_t* buf, uint32_t slots, float s, int mode, uint64_t now, const 
         Describe(buf, slots, s, mode);
     }
     Record* r = RecordOf(buf, now);
+    if (g_surveyLeft > 0)
+    {
+        InterlockedDecrement(&g_surveyLeft);
+        Survey(buf, slots, r, p, s, mode);
+    }
+    else if (now >= g_surveyNext && now < g_surveyUntil)
+    {
+        g_surveyNext = now + 2500;
+        InterlockedExchange(&g_surveyLeft, 1);
+        Survey(buf, slots, r, p, s, mode);
+    }
     const bool known = p.bones == slots;   // the rig read for this person describes this buffer
     const int hips = known ? p.hips : -1;
     if ((mode == 6 || mode == 7) && hips < 0) mode = 2;
@@ -499,6 +566,7 @@ void ReadRig(RED4ext::anim::AnimatedObject* object, Scaled& out)
         {
             out.parents[i] = rig->parentIndeces[i];
             out.names[i] = rig->boneNames[i].hash;
+            out.text[i] = name ? name : "?";
             const char* name = rig->boneNames[i].ToString();
             if (name && out.head < 0 && std::strcmp(name, "Head") == 0) out.head = static_cast<int>(i);
             if (name && out.hips < 0 && std::strcmp(name, "Hips") == 0) out.hips = static_cast<int>(i);
@@ -640,7 +708,13 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (p.on) any = 1;
     InterlockedExchange(&g_anyOn, any);
     ReleaseSRWLockExclusive(&g_lock);
-    if (fresh) InterlockedExchange(&g_dump, 6);
+    if (fresh)
+    {
+        InterlockedExchange(&g_dump, 2);
+        InterlockedExchange(&g_surveyLeft, 6);
+        g_surveyNext = now + 2500;
+        g_surveyUntil = now + 25000;
+    }
     if (fresh && g_sdk)
         g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
                              scale, (mode >= 1 && mode <= 7) ? mode : 0, g_systemHow, search.names);
