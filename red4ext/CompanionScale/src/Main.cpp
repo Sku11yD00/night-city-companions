@@ -158,16 +158,151 @@ void* DetouredPoseApply(void* a1, void* a2, void* a3, unsigned int a4)
 
 // ------------------------------------------------------------------------------------------------ finding a person
 
-RED4ext::world::AnimationSystem* WorldAnimationSystem()
+// The world animation system is not reliably handed out as a game system (in game 2.5 that lookup gives nothing), so
+// it is found the way the VR port finds it: from the person's runtime scene, at scene+0x8 -> +0x38, checked by its type
+// name; failing that, by looking through the scene's pointers (and one level below them) for an object of that type.
+// Found once, then remembered while it still checks out.
+RED4ext::world::AnimationSystem* g_animationSystem = nullptr;
+const char* g_systemHow = "not found";
+
+bool Readable(const void* p, size_t n)
 {
+    const auto v = reinterpret_cast<uintptr_t>(p);
+    if (v < 0x10000 || v >= 0x0000800000000000ull || (v & 7)) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    const DWORD prot = mbi.Protect & 0xFF;
+    if (prot == PAGE_NOACCESS || prot == 0 || (mbi.Protect & PAGE_GUARD)) return false;
+    return v + n <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+}
+
+uint64_t ReadQword(const void* base, size_t off)
+{
+    __try
+    {
+        return *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(base) + off);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+// 1 the animation system itself, 2 its script interface, 0 neither. p must be readable.
+int KindOf(void* p)
+{
+    __try
+    {
+        // an object's first qword is its vtable, which lives in the game's image
+        const uint64_t vtable = *reinterpret_cast<uint64_t*>(p);
+        const auto exe = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+        if (vtable < exe || vtable > exe + 0x10000000ull) return 0;
+        auto* type = reinterpret_cast<RED4ext::ISerializable*>(p)->GetType();
+        if (!type) return 0;
+        if (type->name == "worldAnimationSystem") return 1;
+        if (type->name == "worldAnimationSystemScriptInterface") return 2;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return 0;
+}
+
+RED4ext::world::AnimationSystem* AsSystem(uint64_t candidate)
+{
+    auto* p = reinterpret_cast<void*>(candidate);
+    if (!Readable(p, 0x40)) return nullptr;
+    const int kind = KindOf(p);
+    if (kind == 1) return reinterpret_cast<RED4ext::world::AnimationSystem*>(p);
+    if (kind == 2)
+    {
+        auto* inner = reinterpret_cast<RED4ext::world::AnimationSystemScriptInterface*>(p)->animationSystem;
+        if (Readable(inner, 0x40) && KindOf(inner) == 1) return inner;
+    }
+    return nullptr;
+}
+
+RED4ext::world::AnimationSystem* ScanBlock(const void* block, size_t size)
+{
+    if (!Readable(block, size)) return nullptr;
+    for (size_t off = 0; off + 8 <= size; off += 8)
+    {
+        const uint64_t p = ReadQword(block, off);
+        if (auto* sys = AsSystem(p)) return sys;
+        if (!Readable(reinterpret_cast<void*>(p), 0x200)) continue;
+        for (size_t inner = 0; inner + 8 <= 0x200; inner += 8)
+            if (auto* sys = AsSystem(ReadQword(reinterpret_cast<void*>(p), inner))) return sys;
+    }
+    return nullptr;
+}
+
+RED4ext::world::RuntimeScene* SceneOf(RED4ext::ent::Entity* entity)
+{
+    __try
+    {
+        return entity->runtimeScene;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return nullptr;
+    }
+}
+
+RED4ext::world::AnimationSystem* WorldAnimationSystem(RED4ext::ent::Entity* entity)
+{
+    if (g_animationSystem && Readable(g_animationSystem, 0x40) && KindOf(g_animationSystem) == 1)
+        return g_animationSystem;
+    g_animationSystem = nullptr;
+    g_systemHow = "not found";
+
+    // as a game system
     auto* engine = RED4ext::CGameEngine::Get();
     auto* framework = engine ? engine->framework : nullptr;
     auto* gameInstance = framework ? framework->gameInstance : nullptr;
     auto* rtti = RED4ext::CRTTISystem::Get();
     auto* cls = rtti ? rtti->GetClass("worldAnimationSystemScriptInterface") : nullptr;
-    if (!gameInstance || !cls) return nullptr;
-    auto* iface = reinterpret_cast<RED4ext::world::AnimationSystemScriptInterface*>(gameInstance->GetSystem(cls));
-    return iface ? iface->animationSystem : nullptr;
+    if (gameInstance && cls)
+    {
+        if (auto* sys = AsSystem(reinterpret_cast<uint64_t>(gameInstance->GetSystem(cls))))
+        {
+            g_systemHow = "game system";
+            return g_animationSystem = sys;
+        }
+    }
+    // from the person's scene
+    auto* scene = entity ? SceneOf(entity) : nullptr;
+    if (Readable(scene, 0x10))
+    {
+        const uint64_t parent = ReadQword(scene, 0x8);
+        if (Readable(reinterpret_cast<void*>(parent), 0x40))
+        {
+            if (auto* sys = AsSystem(ReadQword(reinterpret_cast<void*>(parent), 0x38)))
+            {
+                g_systemHow = "scene chain";
+                return g_animationSystem = sys;
+            }
+        }
+        // the scans are slow (a memory query per pointer): at most one round every 5 seconds
+        static uint64_t s_lastScan = 0;
+        const uint64_t now = GetTickCount64();
+        if (s_lastScan && now - s_lastScan < 5000) return nullptr;
+        s_lastScan = now;
+        if (auto* sys = ScanBlock(scene, 0x4B8))
+        {
+            g_systemHow = "scene scan";
+            return g_animationSystem = sys;
+        }
+    }
+    if (framework)
+    {
+        if (auto* sys = ScanBlock(reinterpret_cast<void*>(framework->unk18), 0x800))
+        {
+            g_systemHow = "framework scan";
+            return g_animationSystem = sys;
+        }
+    }
+    return nullptr;
 }
 
 // What the last search saw, for the log: why a person could not be found is the whole question when sizes do nothing.
@@ -254,7 +389,7 @@ uint64_t EntityIdOf(RED4ext::ent::Entity* entity)
 
 RED4ext::anim::AnimatedObject* FindAnimatedObjectOf(RED4ext::ent::Entity* wanted, Search& s)
 {
-    auto* system = WorldAnimationSystem();
+    auto* system = WorldAnimationSystem(wanted);
     s.system = system != nullptr;
     if (!system || !wanted) return nullptr;
     const uint64_t id = EntityIdOf(wanted);
@@ -307,7 +442,7 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         g_sdk->logger->InfoF(g_handle,
                              "cannot scale a person: animation system %s, in id tables %d, by handle %d, "
                              "components [%s], track buffers %s",
-                             search.system ? "found" : "MISSING", search.byId, search.byHandle, search.names,
+                             search.system ? g_systemHow : "MISSING", search.byId, search.byHandle, search.names,
                              search.tracks ? "found" : "missing");
     }
     const uint64_t now = GetTickCount64();
@@ -347,7 +482,9 @@ bool SetScale(void* entityPtr, float scale, int32_t mode)
         if (p.on) any = 1;
     InterlockedExchange(&g_anyOn, any);
     ReleaseSRWLockExclusive(&g_lock);
-    if (fresh && g_sdk) g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d)", scale, mode == 1 ? 1 : 0);
+    if (fresh && g_sdk)
+        g_sdk->logger->InfoF(g_handle, "scaling a person to %.2f (mode %d); animation system by %s, components [%s]",
+                             scale, mode == 1 ? 1 : 0, g_systemHow, search.names);
     return answer;
 }
 
