@@ -94,6 +94,64 @@ local function setPace(f, scale)
 end
 G.setPace = setPace
 
+-- FULL DETAIL AT ANY DISTANCE. The game swaps a person's meshes for coarser ones, and runs fewer of their animation
+-- steps, by how far away they stand -- which is wrong for someone the size of a building. For a follower every
+-- visual part is told to use its finest level and the animation its fullest, said again every ten seconds (a new
+-- body, or new clothes, start untold). A part takes the level when it is made, so each is switched off and on once.
+local function detail(f)
+  if not C.v.fullDetail or not f.entity then return end
+  if os.clock() - (f.detailAt or 0) < 10 then return end
+  f.detailAt = os.clock()
+  local parts
+  local ok, err = pcall(function() parts = f.entity:GetComponents() end)
+  if not ok or not parts then
+    if not f.detailFailed then f.detailFailed = true U.trace('detail %s: no list of parts (%s)', f.name, tostring(err)) end
+    return
+  end
+  f.detailDone = f.detailDone or {}
+  local visual, changed, anim, cycled, kinds = 0, 0, 0, 0, {}
+  for _, c in ipairs(parts) do
+    pcall(function()
+      if c:IsA('entIVisualComponent') then
+        visual = visual + 1
+        local key = tostring(c:GetName())
+        if c.forceLODLevel ~= 0 then
+          c.forceLODLevel = 0
+          changed = changed + 1
+          f.detailDone[key] = nil
+        end
+        pcall(function() if c.forcedLodDistance ~= entForcedLodDistance.Cinematic then c.forcedLodDistance = entForcedLodDistance.Cinematic end end)
+        if not f.detailDone[key] then
+          f.detailDone[key] = true
+          local cls = tostring(c:GetClassName())
+          kinds[cls] = (kinds[cls] or 0) + 1
+          if (cls:find('Mesh') or cls:find('Cloth')) and c:IsEnabled() then
+            c:Toggle(false)
+            c:Toggle(true)
+            cycled = cycled + 1
+          end
+        end
+      elseif c:IsA('entAnimatedComponent') then
+        if c.clientForcedLod ~= 0 or c.serverForcedLod ~= 0 then
+          c.clientForcedLod = 0
+          c.serverForcedLod = 0
+          anim = anim + 1
+        end
+        pcall(function() c.useLongRangeVisibility = true end)
+      elseif c:IsA('entVisualControllerComponent') then
+        pcall(function() c.forcedLodDistance = entForcedLodDistance.Cinematic end)
+      end
+    end)
+  end
+  if changed > 0 or anim > 0 or cycled > 0 then
+    local list = {}
+    for k, n in pairs(kinds) do list[#list + 1] = k .. ' x' .. n end
+    U.trace('detail %s: %d visual parts, %d newly set to the finest level, %d switched off and on, %d animation parts set to full (%s)',
+      f.name, visual, changed, cycled, anim, table.concat(list, ', '))
+  end
+end
+G.detail = detail
+
 function G.setTarget(f, target)
   if not f then return end
   f.targetScale = U.clamp(target, C.v.minScale, C.v.maxScale)
@@ -136,7 +194,7 @@ function G.update(dt)
       if not R.alive(f) then f.scale = 1.0
       else
         send(f, f.scale)
-        if periodic then setPace(f, f.scale) end
+        if periodic then setPace(f, f.scale) detail(f) end
       end
     end
   end
