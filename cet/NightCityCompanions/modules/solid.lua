@@ -61,6 +61,15 @@ local function closest(p1, q1, p2, q2)
 end
 S.closest = closest
 
+-- Where one bone is in the world at the follower's size, as { x, y, z }, or nil when the plugin cannot say.
+function S.boneWorld(f, name)
+  if not lookUp() or not f or not f.entity then return nil end
+  local ok, v = pcall(boneNative, f.entity, name)
+  if not (ok and v and v.w and v.w > 0.5) then return nil end
+  local w = U.localToWorld(f.entity, { v.x, v.y, v.z }, f.scale or 1)
+  return { w.x, w.y, w.z }
+end
+
 -- Every bone the tubes need, in the world, or nil for one the plugin does not know (yet).
 local function bones(f)
   local out, found = {}, 0

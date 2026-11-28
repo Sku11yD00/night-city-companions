@@ -8,6 +8,8 @@
 local U = require('modules/util')
 local C = require('modules/config')
 local R = require('modules/roster')
+local okSolid, Solid = pcall(require, 'modules/solid')
+if not okSolid then Solid = nil end
 
 local Ride = {}
 Ride.state = 'none'     -- none | climbing | mounted
@@ -25,8 +27,28 @@ local function teleport(pos)
   Game.GetTeleportationFacility():Teleport(player, pos, rot)
 end
 
+-- A riding spot sits on the follower's own bone when the plugin can say where that is, so it leans, turns and
+-- swings with their body; `lift` is how far above the bone the player's feet go, in metres on a person of normal
+-- size. Without the plugin's answer it is the fixed place from the settings, which only follows where they stand.
+local onBone = {
+  ['Right shoulder'] = { 'RightArm', 0.07 },
+  ['Left shoulder'] = { 'LeftArm', 0.07 },
+  ['Head'] = { 'HeadTip', 0.02 },
+  ['Open palm'] = { 'RightHand', 0.05 },
+}
+
 local function mountPoint(f, index)
   local m = C.v.mounts[index] or C.v.mounts[1]
+  local b = onBone[m.name]
+  if b and Solid and Solid.boneWorld then
+    local at = Solid.boneWorld(f, b[1])
+    local how = at and 'bone' or 'fixed'
+    if f.rideHow ~= how .. index then
+      f.rideHow = how .. index
+      U.trace('ride %s: spot %s follows %s', f.name, m.name, at and ('the bone ' .. b[1]) or 'a fixed place (no bone from the plugin)')
+    end
+    if at then return Vector4.new(at[1], at[2], at[3] + b[2] * (f.scale or 1), 1.0) end
+  end
   return U.localToWorld(f.entity, m.offset, f.scale or 1)
 end
 
