@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure the CompanionScale plugin
+        run: cmake -S red4ext/CompanionScale -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package (extract into the game folder)
+        shell: pwsh
+        run: |
+          $out = "dist"
+          $plugin = "$out/red4ext/plugins/CompanionScale"
+          $mods = "$out/bin/x64/plugins/cyber_engine_tweaks/mods"
+          New-Item -ItemType Directory -Force $plugin, $mods | Out-Null
+          Copy-Item build/Release/CompanionScale.dll $plugin
+          Copy-Item -Recurse cet/NightCityCompanions $mods
+          Copy-Item README.md, LICENSE $out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NightCityCompanions
+          path: dist
